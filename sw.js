@@ -1,5 +1,5 @@
 /* Jet Lag Coach service worker — offline cache + reminder helper */
-const CACHE = "jetlag-coach-v3";
+const CACHE = "jetlag-coach-v6";
 const ASSETS = [
   "./",
   "./index.html",
@@ -64,7 +64,6 @@ self.addEventListener("message", (event) => {
 
 function armChecker() {
   if (checkTimer) clearInterval(checkTimer);
-  // Periodic check while SW is alive (best-effort; not guaranteed when killed)
   checkTimer = setInterval(checkDue, 60_000);
   checkDue();
 }

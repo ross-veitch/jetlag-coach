@@ -18,7 +18,7 @@
 </head>
 <body>
   <header class="app-header">
-    <div>
+    <div class="header-text">
       <h1>Jet Lag Coach</h1>
       <p class="sub">SIN → DXB → MIA → DXB → SIN · 11–29 Nov 2026</p>
     </div>
@@ -31,23 +31,44 @@
     </div>
   </header>
 
+  <div class="tz-bar" id="tz-bar">
+    <label class="tz-pick">
+      <span class="tz-role">Left</span>
+      <select id="tz-left" aria-label="Left timezone"></select>
+    </label>
+    <label class="tz-pick">
+      <span class="tz-role">Right</span>
+      <select id="tz-right" aria-label="Right timezone"></select>
+    </label>
+  </div>
+
   <div class="legend-bar" id="legend" aria-label="Legend"></div>
 
   <div class="timeline-scroll" id="timeline-scroll">
     <div class="out-of-window" id="out-banner" hidden></div>
-    <div class="col-heads">
-      <div>SGT · Origin</div>
-      <div class="mid">Plan</div>
-      <div id="rhs-head">Local</div>
+    <div class="col-heads" id="col-heads">
+      <div class="head-lhs" id="lhs-head">SGT</div>
+      <div class="mid">
+        <span class="lane-key"><i class="lk sleep"></i><span class="lane-key-text">Sleep</span></span>
+        <span class="lane-key"><i class="lk light"></i><span class="lane-key-text">Light</span></span>
+        <span class="lane-key"><i class="lk marks"></i><span class="lane-key-text">Marks</span></span>
+      </div>
+      <div class="head-rhs" id="rhs-head">Auto</div>
     </div>
     <div class="timeline" id="timeline">
       <div class="timeline-body" id="timeline-body">
-        <div class="axis-col lhs" id="axis-lhs" aria-label="Singapore time"></div>
-        <div class="spine" id="spine" aria-label="Action timeline"></div>
-        <div class="axis-col rhs" id="axis-rhs" aria-label="Destination time"></div>
+        <div class="axis-col lhs" id="axis-lhs" aria-label="Left timezone"></div>
+        <div class="spine" id="spine" aria-label="Action timeline">
+          <div class="lane-guides" aria-hidden="true">
+            <div class="lg sleep"></div>
+            <div class="lg light"></div>
+            <div class="lg marks"></div>
+          </div>
+        </div>
+        <div class="axis-col rhs" id="axis-rhs" aria-label="Right timezone"></div>
       </div>
-      <div class="now-line" id="now-line" style="display:none">
-        <span class="now-badge">NOW</span>
+      <div class="now-line" id="now-line" hidden>
+        <span class="now-badge" id="now-badge">NOW</span>
       </div>
     </div>
   </div>
@@ -55,7 +76,7 @@
   <button type="button" class="fab-now" id="fab-now" aria-label="Jump to now">⬤ Now</button>
 
   <div class="sheet-backdrop" id="sheet-backdrop"></div>
-  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true">
     <div class="sheet-handle"></div>
     <div id="sheet-content"></div>
     <button type="button" class="btn" id="sheet-close" style="width:100%;margin-top:12px">Close</button>

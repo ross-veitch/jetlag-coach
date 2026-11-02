@@ -22,6 +22,13 @@ python3 -m http.server 8765
 
 ## UI
 
+- **Lanes** so blocks never cover each other: Sleep | Light | Marks (caffeine strip + melatonin/meal chips).
+- **Flights** are full-width bands with flight number, route, dep/arr in both selected zones, and duration.
+- **Timezone dropdowns** (Left / Right): Singapore, Dubai, Miami; Right also has **Current location (auto)**. Choices persist in `localStorage`.
+- **Now line** (red) updates every minute; FAB jumps to it.
+
+## UI
+
 - **One continuous vertical timeline** for the whole 11–29 Nov trip (scroll top → bottom).
 - **Left:** Singapore (origin) day + time (SGT).
 - **Right:** current destination zone (GST / EST / SGT) with clear **zone-change markers**.
@@ -64,3 +71,7 @@ README.md
 ## Source
 
 Hour-by-hour advice reused from the Cursor Page “Jet lag plan: Singapore → Dubai → Miami → Dubai → Singapore, Nov 2026”. No new medical advice invented.
+
+## Design notes (v4+)
+
+Visual language borrowed from Timeshifter store/press screenshots (capsule lanes, icon-led advice, dual clocks, zone bands, gold “seek light” / navy sleep / outlined avoid). Local reference images live in `ref/` (gitignored). Requirements kept: continuous vertical timeline, timezone dropdowns, prominent flight bands with flight #, red Now line.
