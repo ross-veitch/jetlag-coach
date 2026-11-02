@@ -10,8 +10,7 @@
 
   const LS_LEFT = "jetlag-tz-left";
   const LS_RIGHT = "jetlag-tz-right";
-  const CARD_MIN = 56;
-  const CARD_GAP = 10;
+  const CARD_GAP = 12;
 
   function parseSimNow() {
     const q = new URLSearchParams(location.search).get("now");
@@ -111,8 +110,7 @@
     let idSeq = 0;
     for (const day of trip.days) {
       for (const b of day.blocks) {
-        if (b.t === "flight") continue;
-        if (b.t === "awake") continue;
+        if (b.t === "flight" || b.t === "awake") continue;
         const startMs = localHourToMs(day, b.a);
         const endMs = localHourToMs(day, b.b);
         if (endMs <= startMs) continue;
@@ -139,7 +137,9 @@
       const startMs = Date.parse(f.dep);
       const endMs = Date.parse(f.arr);
       const route = parseRoute(f.label);
-      const dayHit = trip.days.find((d) => (d.tip || "").includes(route.id) || (d.title || "").includes(route.id));
+      const dayHit = trip.days.find(
+        (d) => (d.tip || "").includes(route.id) || (d.title || "").includes(route.id)
+      );
       return {
         id: "f" + (i + 1),
         t: "flight",
@@ -165,7 +165,7 @@
 
     const zoneMarkers = (trip.zoneSegments || []).slice(1).map((z) => ({
       ms: Date.parse(z.from),
-      label: "Zone → " + z.label + " (" + z.abbr + ")",
+      label: z.label,
       abbr: z.abbr,
       tz: z.tz,
       place: z.label,
@@ -177,10 +177,33 @@
   const abs = buildAbsolute(trip);
 
   const PX = () =>
-    parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--px-per-hour")) || 68;
+    parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--px-per-hour")) || 56;
 
-  function yOf(ms) {
+  /** Linear (unstretched) y — only used as natural target before packing */
+  function naturalY(ms) {
     return ((ms - abs.startMs) / 3600000) * PX();
+  }
+
+  /** Anchors for time→layout Y warp, filled by render() */
+  let layoutAnchors = []; // { ms, y }
+  let layoutHeight = 0;
+
+  function yAt(ms) {
+    if (!layoutAnchors.length) return naturalY(ms);
+    if (ms <= layoutAnchors[0].ms) {
+      return layoutAnchors[0].y + ((ms - layoutAnchors[0].ms) / 3600000) * PX();
+    }
+    for (let i = 0; i < layoutAnchors.length - 1; i++) {
+      const a = layoutAnchors[i];
+      const b = layoutAnchors[i + 1];
+      if (ms <= b.ms) {
+        if (b.ms === a.ms) return a.y;
+        const t = (ms - a.ms) / (b.ms - a.ms);
+        return a.y + t * (b.y - a.y);
+      }
+    }
+    const last = layoutAnchors[layoutAnchors.length - 1];
+    return last.y + ((ms - last.ms) / 3600000) * PX();
   }
 
   const els = {
@@ -189,6 +212,7 @@
     body: document.getElementById("timeline-body"),
     lhs: document.getElementById("axis-lhs"),
     rhs: document.getElementById("axis-rhs"),
+    rail: document.getElementById("rail"),
     spine: document.getElementById("spine"),
     nowLine: document.getElementById("now-line"),
     nowBadge: document.getElementById("now-badge"),
@@ -226,6 +250,8 @@
       mel: "💊",
       meal: "🍽",
       flight: "✈",
+      day: "📅",
+      zone: "🕐",
     };
     return map[type] || "•";
   }
@@ -258,8 +284,10 @@
       case "ncaff": return "Last coffee — stop caffeine";
       case "mel": return melTitle(b);
       case "meal": return mealName(b);
-      case "flight": return (b.flightId || "Flight") + " " + (b.from || "") + "→" + (b.to || "");
-      default: return (data.blockTypes[b.t] || {}).label || b.t;
+      case "flight":
+        return (b.flightId || "Flight") + " " + (b.from || "") + " → " + (b.to || "");
+      default:
+        return (data.blockTypes[b.t] || {}).label || b.t;
     }
   }
 
@@ -283,8 +311,7 @@
     const leftOpts = CITIES.map(
       (c) => `<option value="${c.id}">${c.name} (${c.abbr})</option>`
     ).join("");
-    const rightOpts =
-      `<option value="auto">Current location (auto)</option>` + leftOpts;
+    const rightOpts = `<option value="auto">Current location (auto)</option>` + leftOpts;
     els.tzLeft.innerHTML = leftOpts;
     els.tzRight.innerHTML = rightOpts;
     els.tzLeft.value = leftChoice;
@@ -296,35 +323,142 @@
     const L = resolveSide(leftChoice, n);
     const R = resolveSide(rightChoice, n);
     els.lhsHead.textContent = L.abbr;
-    els.lhsHead.parentElement.title = "Left column: " + L.name + " (" + L.abbr + ") — tap to change";
-    if (rightChoice === "auto") {
-      els.rhsHead.textContent = R.abbr;
-      els.rhsHead.parentElement.title =
-        "Right column auto · " + R.name + " (" + R.abbr + ") — tap to change";
-    } else {
-      els.rhsHead.textContent = R.abbr;
-      els.rhsHead.parentElement.title = "Right column: " + R.name + " (" + R.abbr + ") — tap to change";
-    }
+    els.lhsHead.parentElement.title = "Left: " + L.name + " (" + L.abbr + ") — tap to change";
+    els.rhsHead.textContent = R.abbr;
+    els.rhsHead.parentElement.title =
+      (rightChoice === "auto" ? "Auto · " : "") + R.name + " (" + R.abbr + ") — tap to change";
   }
 
-  function clearSpine() {
+  function clearLayers() {
     els.spine.innerHTML = "";
+    els.rail.innerHTML = "";
     els.lhs.innerHTML = "";
     els.rhs.innerHTML = "";
   }
 
-  function packCards(items) {
-    // items: { startMs, el, naturalTop }
-    items.sort((a, b) => a.naturalTop - b.naturalTop || a.startMs - b.startMs);
-    let lastBottom = -Infinity;
-    for (const it of items) {
-      let top = it.naturalTop;
-      if (top < lastBottom + CARD_GAP) top = lastBottom + CARD_GAP;
-      it.el.style.top = Math.round(top) + "px";
-      const h = Math.max(it.el.getBoundingClientRect().height || CARD_MIN, CARD_MIN);
-      it.el.style.minHeight = CARD_MIN + "px";
-      lastBottom = top + h;
+  /** Build sorted text-bearing flow items for the whole trip */
+  function buildFlowItems() {
+    const items = [];
+
+    // Day dividers on left-zone midnights
+    const step = 15 * 60 * 1000;
+    for (let ms = abs.startMs; ms <= abs.endMs; ms += step) {
+      const L = resolveSide(leftChoice, ms);
+      const lp = partsInTz(ms, L.tz);
+      if (parseInt(lp.minute, 10) !== 0) continue;
+      if (parseInt(lp.hour, 10) !== 0) continue;
+      if (ms === abs.startMs) {
+        // still show trip start day
+      }
+      items.push({
+        kind: "day",
+        ms,
+        endMs: ms,
+        id: "day-" + ms,
+        title: dayLabel(ms, L.tz),
+      });
     }
+
+    for (const z of abs.zoneMarkers) {
+      if (z.ms < abs.startMs || z.ms > abs.endMs) continue;
+      items.push({
+        kind: "zone",
+        ms: z.ms,
+        endMs: z.ms,
+        id: "zone-" + z.ms,
+        title: "Now on " + z.place + " time (" + z.abbr + ")",
+        zone: z,
+      });
+    }
+
+    for (const b of abs.blocks) {
+      if (b.t === "caff") continue; // use ncaff card instead
+      items.push({
+        kind: "card",
+        ms: b.startMs,
+        endMs: b.endMs,
+        id: b.id,
+        block: b,
+        title: plainTitle(b),
+      });
+    }
+
+    for (const f of abs.flights) {
+      items.push({
+        kind: "flight",
+        ms: f.startMs,
+        endMs: f.endMs,
+        id: f.id,
+        block: f,
+        title: plainTitle(f),
+      });
+    }
+
+    const kindOrder = { day: 0, zone: 1, flight: 2, card: 3 };
+    items.sort(
+      (a, b) =>
+        a.ms - b.ms ||
+        (kindOrder[a.kind] ?? 9) - (kindOrder[b.kind] ?? 9) ||
+        String(a.id).localeCompare(b.id)
+    );
+    return items;
+  }
+
+  function renderFlowElement(item) {
+    if (item.kind === "day") {
+      const el = document.createElement("div");
+      el.className = "flow-item day-row text-el";
+      el.dataset.id = item.id;
+      el.textContent = item.title;
+      return el;
+    }
+    if (item.kind === "zone") {
+      const el = document.createElement("div");
+      el.className = "flow-item zone-row text-el";
+      el.dataset.id = item.id;
+      el.textContent = item.title;
+      return el;
+    }
+    if (item.kind === "flight") {
+      const f = item.block;
+      const airportTz = { SIN: "Asia/Singapore", DXB: "Asia/Dubai", MIA: "America/New_York" };
+      const airportAbbr = { SIN: "SGT", DXB: "GST", MIA: "EST" };
+      const depAirport =
+        hourLabel(f.startMs, airportTz[f.from] || "UTC") + " " + (airportAbbr[f.from] || "");
+      const arrAirport =
+        hourLabel(f.endMs, airportTz[f.to] || "UTC") + " " + (airportAbbr[f.to] || "");
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "flow-item flight-card text-el";
+      el.dataset.id = f.id;
+      el.innerHTML =
+        `<span class="ico" aria-hidden="true">✈</span>` +
+        `<span class="copy">` +
+        `<div class="title">${escapeHtml(f.flightId)} ${escapeHtml(f.from)} → ${escapeHtml(f.to)}` +
+        `<span class="fb-dur">${escapeHtml(fmtDur(f.endMs - f.startMs))}</span></div>` +
+        `<div class="times">Departs ${escapeHtml(f.from)} ${escapeHtml(depAirport)} · Arrives ${escapeHtml(f.to)} ${escapeHtml(arrAirport)}</div>` +
+        `<div class="times">${escapeHtml(rangeText(f))}</div>` +
+        `<div class="detail">${escapeHtml(f.detail || "")}</div>` +
+        `</span>`;
+      el.addEventListener("click", () => openDetail(f));
+      return el;
+    }
+    // advice card
+    const b = item.block;
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "flow-item advice-card type-" + b.t + " text-el";
+    el.dataset.id = b.id;
+    const title =
+      b.t === "seek" || b.t === "avoid" || b.t === "sleep" || b.t === "nap"
+        ? plainTitle(b)
+        : plainTitle(b);
+    el.innerHTML =
+      `<span class="ico" aria-hidden="true">${blockIcon(b.t)}</span>` +
+      `<span class="copy"><div class="title">${escapeHtml(title)}</div>` +
+      `<div class="times">${escapeHtml(rangeText(b))}</div></span>`;
+    el.addEventListener("click", () => openDetail(b));
+    return el;
   }
 
   function renderUpNext() {
@@ -348,7 +482,6 @@
         upcoming.push(b);
       }
     }
-
     const nextFlight = abs.flights.find((f) => f.startMs >= now - 30 * 60000 && f.endMs >= now);
     if (nextFlight && nextFlight.startMs - now < 8 * 3600000) {
       if (!upcoming.some((u) => u.id === nextFlight.id)) {
@@ -360,7 +493,8 @@
     const label = document.querySelector(".up-next-label");
     if (label && !label.dataset.ready) {
       label.dataset.ready = "1";
-      label.innerHTML = 'Up next <button type="button" id="up-next-toggle" aria-expanded="true">Hide</button>';
+      label.innerHTML =
+        'Up next <button type="button" id="up-next-toggle" aria-expanded="true">Hide</button>';
       document.getElementById("up-next-toggle").addEventListener("click", (e) => {
         e.stopPropagation();
         const box = document.getElementById("up-next");
@@ -371,7 +505,8 @@
     }
 
     if (!upcoming.length) {
-      els.upNextList.innerHTML = `<li class="up-next-empty">No upcoming actions in the trip window.</li>`;
+      els.upNextList.innerHTML =
+        `<li class="up-next-empty">No upcoming actions in the trip window.</li>`;
       return;
     }
 
@@ -383,7 +518,7 @@
         `<span class="body"><div class="title">${escapeHtml(plainTitle(b))}</div>` +
         `<div class="when">${escapeHtml(rangeText(b))}</div></span>`;
       li.addEventListener("click", () => {
-        const y = yOf(b.startMs) - 80;
+        const y = yAt(b.startMs) - 80;
         els.scroll.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
         openDetail(b);
       });
@@ -392,181 +527,94 @@
   }
 
   function render() {
-    const height = yOf(abs.endMs);
-    els.timeline.style.height = height + "px";
-    els.body.style.height = height + "px";
-    els.spine.style.height = height + "px";
-    els.lhs.style.height = height + "px";
-    els.rhs.style.height = height + "px";
+    clearLayers();
+    const items = buildFlowItems();
 
-    clearSpine();
+    // Create DOM nodes first (off-layout measure via temporary absolute)
+    const nodes = items.map((item) => {
+      const el = renderFlowElement(item);
+      els.spine.appendChild(el);
+      return { item, el };
+    });
 
-    const airportTz = { SIN: "Asia/Singapore", DXB: "Asia/Dubai", MIA: "America/New_York" };
-    const airportAbbr = { SIN: "SGT", DXB: "GST", MIA: "EST" };
+    // Force layout, measure heights, pack without overlap (timeline stretches)
+    void els.spine.offsetHeight;
+    let cursor = 8;
+    layoutAnchors = [];
+    for (const node of nodes) {
+      const natural = naturalY(node.item.ms);
+      const top = Math.max(natural, cursor);
+      node.el.style.top = Math.round(top) + "px";
+      const h = Math.max(node.el.getBoundingClientRect().height, node.item.kind === "flight" ? 88 : 36);
+      node.layoutY = top;
+      node.layoutH = h;
+      layoutAnchors.push({ ms: node.item.ms, y: top });
+      cursor = top + h + CARD_GAP;
+    }
 
-    // Hour grid + day markers
-    const step = 15 * 60 * 1000;
-    for (let ms = abs.startMs; ms <= abs.endMs + 1; ms += step) {
+    // End anchor so rail/now can extend past last card
+    layoutAnchors.push({ ms: abs.endMs, y: Math.max(cursor, naturalY(abs.endMs)) });
+    layoutHeight = Math.max(cursor + 24, naturalY(abs.endMs) + 40);
+
+    els.timeline.style.height = layoutHeight + "px";
+    els.body.style.height = layoutHeight + "px";
+    els.spine.style.height = layoutHeight + "px";
+    els.rail.style.height = layoutHeight + "px";
+    els.lhs.style.height = layoutHeight + "px";
+    els.rhs.style.height = layoutHeight + "px";
+
+    // Silent rail bars (no text)
+    const railKinds = [
+      ...abs.blocks.filter((b) => ["sleep", "nap", "seek", "avoid"].includes(b.t)),
+      ...abs.flights,
+    ];
+    for (const b of railKinds) {
+      const top = yAt(b.startMs);
+      const bottom = yAt(b.endMs);
+      const h = Math.max(bottom - top, 4);
+      const bar = document.createElement("div");
+      bar.className = "rail-bar " + b.t;
+      bar.style.top = top + "px";
+      bar.style.height = h + "px";
+      els.rail.appendChild(bar);
+    }
+
+    // Gutter hour ticks (skip if they'd collide with previous tick)
+    const step = 60 * 60 * 1000;
+    let lastLhsY = -Infinity;
+    let lastRhsY = -Infinity;
+    for (let ms = abs.startMs; ms <= abs.endMs; ms += step) {
       const L = resolveSide(leftChoice, ms);
       const R = resolveSide(rightChoice, ms);
       const lp = partsInTz(ms, L.tz);
-      const minute = parseInt(lp.minute, 10);
-      if (minute !== 0) continue;
+      // align to left-zone hour boundaries approximately via stepping 15m then filter
+    }
+    // More accurate: walk 15m, emit when left minute==0 and hour even
+    for (let ms = abs.startMs; ms <= abs.endMs; ms += 15 * 60 * 1000) {
+      const L = resolveSide(leftChoice, ms);
+      const R = resolveSide(rightChoice, ms);
+      const lp = partsInTz(ms, L.tz);
+      if (parseInt(lp.minute, 10) !== 0) continue;
       const hour = parseInt(lp.hour, 10);
-      const y = yOf(ms);
-      const isMidnight = hour === 0;
-
-      if (isMidnight) {
-        const dm = document.createElement("div");
-        dm.className = "day-marker";
-        dm.style.top = y + "px";
-        els.spine.appendChild(dm);
-        const dl = document.createElement("div");
-        dl.className = "day-marker-label";
-        dl.style.top = y + "px";
-        dl.textContent = dayLabel(ms, L.tz);
-        els.spine.appendChild(dl);
+      if (hour % 2 !== 0 && hour !== 0) continue;
+      const y = yAt(ms);
+      if (y - lastLhsY >= 18) {
+        const tick = document.createElement("div");
+        tick.className = "tick" + (hour === 0 ? " major" : "");
+        tick.style.top = y + "px";
+        tick.innerHTML = `<span class="time">${lp.hour}:${lp.minute}</span>`;
+        els.lhs.appendChild(tick);
+        lastLhsY = y;
       }
-
-      const hl = document.createElement("div");
-      hl.className = "hour-line";
-      hl.style.top = y + "px";
-      els.spine.appendChild(hl);
-
-      if (hour % 2 === 0 || isMidnight) {
-        const lhsTick = document.createElement("div");
-        lhsTick.className = "tick" + (isMidnight ? " major" : "");
-        lhsTick.style.top = y + "px";
-        lhsTick.innerHTML =
-          (isMidnight ? `<span class="day">${escapeHtml(dayLabel(ms, L.tz))}</span>` : "") +
-          `<span class="time">${lp.hour}:${lp.minute}</span>`;
-        els.lhs.appendChild(lhsTick);
-
-        const rp = partsInTz(ms, R.tz);
-        const rhsTick = document.createElement("div");
-        const showDay = rp.hour === "00";
-        rhsTick.className = "tick" + (showDay ? " major" : "");
-        rhsTick.style.top = y + "px";
-        // Compact RHS: time only (day lives on left + spine marker)
-        rhsTick.innerHTML = `<span class="time">${rp.hour}:${rp.minute}</span>`;
-        els.rhs.appendChild(rhsTick);
+      const rp = partsInTz(ms, R.tz);
+      if (y - lastRhsY >= 18) {
+        const tick = document.createElement("div");
+        tick.className = "tick";
+        tick.style.top = y + "px";
+        tick.innerHTML = `<span class="time">${rp.hour}:${rp.minute}</span>`;
+        els.rhs.appendChild(tick);
+        lastRhsY = y;
       }
-    }
-
-    // Duration bands (sleep / light) — carve out flight ranges so flight text stays readable
-    function segmentsMinusFlights(startMs, endMs) {
-      let segs = [[startMs, endMs]];
-      for (const f of abs.flights) {
-        const next = [];
-        for (const [s, e] of segs) {
-          if (f.endMs <= s || f.startMs >= e) { next.push([s, e]); continue; }
-          if (f.startMs > s) next.push([s, Math.min(f.startMs, e)]);
-          if (f.endMs < e) next.push([Math.max(f.endMs, s), e]);
-        }
-        segs = next.filter(([s, e]) => e - s >= 20 * 60000);
-      }
-      return segs;
-    }
-
-    for (const b of abs.blocks) {
-      if (!["sleep", "nap", "seek", "avoid"].includes(b.t)) continue;
-      const label =
-        b.t === "seek" ? "Get bright light" :
-        b.t === "avoid" ? "Wear sunglasses" :
-        b.t === "nap" ? "Nap" : "Sleep";
-      const segs = segmentsMinusFlights(b.startMs, b.endMs);
-      segs.forEach((seg, idx) => {
-        const top = yOf(seg[0]);
-        const h = Math.max(yOf(seg[1]) - top, 28);
-        const band = document.createElement("div");
-        band.className = "band " + b.t;
-        band.style.top = top + "px";
-        band.style.height = h + "px";
-        if (h >= 44) {
-          const fake = { ...b, startMs: seg[0], endMs: seg[1] };
-          band.innerHTML =
-            `<span class="band-label">${escapeHtml(label)}` +
-            `<span class="band-sub">${escapeHtml(rangeText(fake))}</span></span>`;
-        }
-        band.style.pointerEvents = "auto";
-        band.style.cursor = "pointer";
-        band.setAttribute("role", "button");
-        band.tabIndex = 0;
-        band.addEventListener("click", () => openDetail(b));
-        els.spine.appendChild(band);
-      });
-    }
-
-    // Flights
-    for (const f of abs.flights) {
-      const top = yOf(f.startMs);
-      const h = Math.max(yOf(f.endMs) - top, 110);
-      const leftDep = resolveSide(leftChoice, f.startMs);
-      const leftArr = resolveSide(leftChoice, f.endMs);
-      const rightDep = resolveSide(rightChoice, f.startMs);
-      const rightArr = resolveSide(rightChoice, f.endMs);
-      const depAirport = hourLabel(f.startMs, airportTz[f.from] || leftDep.tz) + " " + (airportAbbr[f.from] || "");
-      const arrAirport = hourLabel(f.endMs, airportTz[f.to] || rightArr.tz) + " " + (airportAbbr[f.to] || "");
-      const depL = hourLabel(f.startMs, leftDep.tz) + " " + leftDep.abbr;
-      const depR = hourLabel(f.startMs, rightDep.tz) + " " + rightDep.abbr;
-      const arrL = hourLabel(f.endMs, leftArr.tz) + " " + leftArr.abbr;
-      const arrR = hourLabel(f.endMs, rightArr.tz) + " " + rightArr.abbr;
-      const el = document.createElement("button");
-      el.type = "button";
-      el.className = "flight-band";
-      el.style.top = top + "px";
-      el.style.height = h + "px";
-      el.dataset.id = f.id;
-      el.innerHTML = `
-        <div class="fb-head">
-          <div class="fb-title">
-            <span class="fb-plane" aria-hidden="true">✈</span>
-            <span class="fb-num">${escapeHtml(f.flightId)}</span>
-            <span class="fb-route">${escapeHtml(f.from)} → ${escapeHtml(f.to)}</span>
-            <span class="fb-dur">${escapeHtml(fmtDur(f.endMs - f.startMs))}</span>
-          </div>
-          <div class="fb-times">
-            <div><strong>Departs ${escapeHtml(f.from)}</strong> ${escapeHtml(depAirport)}</div>
-            <div class="fb-cols">${escapeHtml(depL)} · ${escapeHtml(depR)}</div>
-            <div><strong>Arrives ${escapeHtml(f.to)}</strong> ${escapeHtml(arrAirport)}</div>
-            <div class="fb-cols">${escapeHtml(arrL)} · ${escapeHtml(arrR)}</div>
-          </div>
-        </div>
-        <div class="fb-hint">${escapeHtml(f.detail || "")}</div>`;
-      el.addEventListener("click", () => openDetail(f));
-      els.spine.appendChild(el);
-    }
-
-    // Advice cards: discrete actions only (bands already cover sleep/light)
-    const cardBlocks = abs.blocks.filter((b) =>
-      b.t === "mel" || b.t === "meal" || b.t === "ncaff" || b.t === "nap"
-    );
-    const packed = [];
-    for (const b of cardBlocks) {
-      const el = document.createElement("button");
-      el.type = "button";
-      el.className = "advice-card type-" + b.t;
-      el.dataset.id = b.id;
-      el.innerHTML =
-        `<span class="ico" aria-hidden="true">${blockIcon(b.t)}</span>` +
-        `<span class="copy"><div class="title">${escapeHtml(plainTitle(b))}</div>` +
-        `<div class="times">${escapeHtml(rangeText(b))}</div></span>`;
-      el.addEventListener("click", () => openDetail(b));
-      els.spine.appendChild(el);
-      packed.push({ startMs: b.startMs, el, naturalTop: yOf(b.startMs) });
-    }
-
-    // Force layout then pack
-    void els.spine.offsetHeight;
-    packCards(packed);
-
-    for (const z of abs.zoneMarkers) {
-      if (z.ms < abs.startMs || z.ms > abs.endMs) continue;
-      const el = document.createElement("div");
-      el.className = "zone-marker";
-      el.style.top = yOf(z.ms) + "px";
-      el.innerHTML = `<span>🕐 Now on ${escapeHtml(z.place)} time (${escapeHtml(z.abbr)})</span>`;
-      els.spine.appendChild(el);
     }
 
     updateHeadLabels();
@@ -582,9 +630,12 @@
     const inWindow = now >= abs.startMs && now <= abs.endMs;
     els.nowLine.hidden = false;
     const clampMs = Math.min(Math.max(now, abs.startMs), abs.endMs);
-    els.nowLine.style.top = yOf(clampMs) + "px";
-    const tL = hourLabel(now, L.tz) + " " + L.abbr;
-    els.nowBadge.textContent = inWindow ? "NOW · " + tL : "NOW · " + tL + " (off-plan)";
+    els.nowLine.style.top = yAt(clampMs) + "px";
+    // Compact badge for gutter only
+    els.nowBadge.textContent = "NOW\n" + hourLabel(now, L.tz);
+    els.nowBadge.title = inWindow
+      ? "Now · " + hourLabel(now, L.tz) + " " + L.abbr
+      : "Now · " + hourLabel(now, L.tz) + " " + L.abbr + " (off-plan)";
 
     if (!inWindow) {
       els.banner.hidden = false;
@@ -601,7 +652,7 @@
   function scrollToNow(smooth) {
     const now = nowMs();
     const targetMs = Math.min(Math.max(now, abs.startMs), abs.endMs);
-    const y = yOf(targetMs) - els.scroll.clientHeight * 0.35;
+    const y = yAt(targetMs) - els.scroll.clientHeight * 0.35;
     els.scroll.scrollTo({ top: Math.max(0, y), behavior: smooth ? "smooth" : "auto" });
   }
 
@@ -635,7 +686,7 @@
         ${prop("Est. CBTmin", b.dayCbt)}
         ${extra}
       </dl>
-      <p class="footer-note" style="margin-top:16px;font-size:0.875rem;color:var(--text-dim)">${escapeHtml(data.disclaimer)}</p>`;
+      <p style="margin-top:16px;font-size:0.875rem;color:var(--text-dim)">${escapeHtml(data.disclaimer)}</p>`;
     els.sheet.classList.add("open");
     els.sheetBd.classList.add("open");
   }
@@ -722,10 +773,13 @@
       refreshing = true;
       location.reload();
     });
-    navigator.serviceWorker.register("./sw.js").then((reg) => {
-      try { reg.update(); } catch (_) {}
-      setInterval(() => { try { reg.update(); } catch (_) {} }, 60 * 60 * 1000);
-    }).catch((e) => console.warn("SW failed", e));
+    navigator.serviceWorker
+      .register("./sw.js")
+      .then((reg) => {
+        try { reg.update(); } catch (_) {}
+        setInterval(() => { try { reg.update(); } catch (_) {} }, 60 * 60 * 1000);
+      })
+      .catch((e) => console.warn("SW failed", e));
   }
 
   fillTzSelects();
@@ -746,5 +800,15 @@
     }
   });
 
-  window.__jetlag = { abs, trip, scrollToNow, yOf, nowMs, setSimNow: (iso) => { simNow = Date.parse(iso); updateNow(); } };
+  window.__jetlag = {
+    abs,
+    trip,
+    scrollToNow,
+    yAt,
+    nowMs,
+    setSimNow: (iso) => {
+      simNow = Date.parse(iso);
+      updateNow();
+    },
+  };
 })();

@@ -44,7 +44,12 @@
         <span class="tz-chev" aria-hidden="true">▾</span>
         <select id="tz-left" aria-label="Left timezone"></select>
       </label>
-      <div class="mid" aria-hidden="true">Timeline</div>
+      <div class="mid" aria-hidden="true">
+        <span class="rail-key sleep" title="Sleep"></span>
+        <span class="rail-key seek" title="Bright light"></span>
+        <span class="rail-key avoid" title="Sunglasses"></span>
+        <span class="rail-key flight" title="Flight"></span>
+      </div>
       <label class="tz-head" for="tz-right">
         <span class="tz-abbr" id="rhs-head">Auto</span>
         <span class="tz-chev" aria-hidden="true">▾</span>
@@ -54,6 +59,7 @@
     <div class="timeline" id="timeline">
       <div class="timeline-body" id="timeline-body">
         <div class="axis-col lhs" id="axis-lhs" aria-label="Left timezone hours"></div>
+        <div class="rail" id="rail" aria-hidden="true"></div>
         <div class="spine" id="spine" aria-label="Action timeline"></div>
         <div class="axis-col rhs" id="axis-rhs" aria-label="Right timezone hours"></div>
       </div>
