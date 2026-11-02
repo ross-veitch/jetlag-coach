@@ -241,14 +241,15 @@ body {
 }
 
 .block.marker {
-  left: 84%; width: 14%;
   min-height: 34px; height: auto !important;
   padding: 6px 4px; z-index: 6; border-radius: 14px;
 }
 .block.marker.lane-mel {
+  left: 78%; width: 11%;
   background: rgba(184, 149, 108, 0.95); color: #1a1208;
 }
 .block.marker.lane-meal {
+  left: 89%; width: 10%;
   background: rgba(232, 184, 109, 0.95); color: #1a1208;
 }
 
@@ -424,7 +425,8 @@ body {
   .tick .time { font-size: 0.72rem; }
   .flight-band .fb-title { font-size: 0.92rem; }
   .block.lane-caff, .block.lane-ncaff { width: 16%; }
-  .block.marker { left: 86%; width: 12%; }
+  .block.marker.lane-mel { left: 80%; width: 10%; }
+  .block.marker.lane-meal { left: 90%; width: 9%; }
 }
 @media (max-width: 380px) {
   :root { --lhs-w: 46px; --rhs-w: 46px; --px-per-hour: 48px; }
