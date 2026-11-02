@@ -75,3 +75,7 @@ Hour-by-hour advice reused from the Cursor Page “Jet lag plan: Singapore → D
 ## Design notes (v4+)
 
 Visual language borrowed from Timeshifter store/press screenshots (capsule lanes, icon-led advice, dual clocks, zone bands, gold “seek light” / navy sleep / outlined avoid). Local reference images live in `ref/` (gitignored). Requirements kept: continuous vertical timeline, timezone dropdowns, prominent flight bands with flight #, red Now line.
+
+## Readability redesign (v10)
+
+Full-width plain-language advice cards (no Mel/OK chips). Sleep/light as tappable duration bands. Timezone pickers live in the sticky SGT/EST headers. Collapsible “Up next” strip. Service worker cache `jetlag-coach-v10`.

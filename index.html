@@ -31,41 +31,31 @@
     </div>
   </header>
 
-  <div class="tz-bar" id="tz-bar">
-    <label class="tz-pick">
-      <span class="tz-role">Left</span>
-      <select id="tz-left" aria-label="Left timezone"></select>
-    </label>
-    <label class="tz-pick">
-      <span class="tz-role">Right</span>
-      <select id="tz-right" aria-label="Right timezone"></select>
-    </label>
-  </div>
-
-  <div class="legend-bar" id="legend" aria-label="Legend"></div>
+  <section class="up-next" id="up-next" aria-label="Up next">
+    <div class="up-next-label">Up next</div>
+    <ol class="up-next-list" id="up-next-list"></ol>
+  </section>
 
   <div class="timeline-scroll" id="timeline-scroll">
     <div class="out-of-window" id="out-banner" hidden></div>
     <div class="col-heads" id="col-heads">
-      <div class="head-lhs" id="lhs-head">SGT</div>
-      <div class="mid">
-        <span class="lane-key"><i class="lk sleep"></i><span class="lane-key-text">Sleep</span></span>
-        <span class="lane-key"><i class="lk light"></i><span class="lane-key-text">Light</span></span>
-        <span class="lane-key"><i class="lk marks"></i><span class="lane-key-text">Marks</span></span>
-      </div>
-      <div class="head-rhs" id="rhs-head">Auto</div>
+      <label class="tz-head" for="tz-left">
+        <span class="tz-abbr" id="lhs-head">SGT</span>
+        <span class="tz-chev" aria-hidden="true">▾</span>
+        <select id="tz-left" aria-label="Left timezone"></select>
+      </label>
+      <div class="mid" aria-hidden="true">Timeline</div>
+      <label class="tz-head" for="tz-right">
+        <span class="tz-abbr" id="rhs-head">Auto</span>
+        <span class="tz-chev" aria-hidden="true">▾</span>
+        <select id="tz-right" aria-label="Right timezone"></select>
+      </label>
     </div>
     <div class="timeline" id="timeline">
       <div class="timeline-body" id="timeline-body">
-        <div class="axis-col lhs" id="axis-lhs" aria-label="Left timezone"></div>
-        <div class="spine" id="spine" aria-label="Action timeline">
-          <div class="lane-guides" aria-hidden="true">
-            <div class="lg sleep"></div>
-            <div class="lg light"></div>
-            <div class="lg marks"></div>
-          </div>
-        </div>
-        <div class="axis-col rhs" id="axis-rhs" aria-label="Right timezone"></div>
+        <div class="axis-col lhs" id="axis-lhs" aria-label="Left timezone hours"></div>
+        <div class="spine" id="spine" aria-label="Action timeline"></div>
+        <div class="axis-col rhs" id="axis-rhs" aria-label="Right timezone hours"></div>
       </div>
       <div class="now-line" id="now-line" hidden>
         <span class="now-badge" id="now-badge">NOW</span>

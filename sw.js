@@ -1,5 +1,5 @@
 /* Jet Lag Coach service worker — offline cache + reminder helper */
-const CACHE = "jetlag-coach-v7";
+const CACHE = "jetlag-coach-v10";
 const ASSETS = [
   "./",
   "./index.html",
