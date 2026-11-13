@@ -278,6 +278,8 @@ body {
 .advice-card.type-mel { border-color: rgba(212,165,116,0.7); }
 .advice-card.type-meal { border-color: rgba(232,184,109,0.65); }
 .advice-card.type-ncaff { border-color: rgba(200,100,90,0.55); }
+.advice-card.type-train { border-color: rgba(74,222,128,0.7); }
+.advice-card.type-sync { border-color: rgba(56,189,248,0.8); border-width: 2px; }
 .flight-card {
   border-color: var(--flight-border);
   background: linear-gradient(180deg, rgba(91,141,239,0.18), var(--bg-card));

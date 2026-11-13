@@ -118,6 +118,7 @@
           id: "b" + ++idSeq,
           t: b.t,
           note: b.note,
+          title: b.title,
           startMs,
           endMs,
           dayId: day.id,
@@ -250,6 +251,8 @@
       mel: "💊",
       meal: "🍽",
       flight: "✈",
+      train: "🏃",
+      sync: "⌚",
       day: "📅",
       zone: "🕐",
     };
@@ -268,6 +271,7 @@
   function melTitle(b) {
     const m = (b.dayMel || "").trim();
     if (!m || /^none/i.test(m)) return "Melatonin — skip today";
+    if (/optional|only if/i.test(m)) return "Optional melatonin (only if needed)";
     const dose = m.match(/(\d+(?:\.\d+)?\s*–\s*\d+(?:\.\d+)?\s*mg|\d+(?:\.\d+)?\s*mg)/i);
     if (dose) return "Take melatonin " + dose[1].replace(/\s+/g, " ");
     if (/optional/i.test(m)) return "Optional melatonin";
@@ -275,7 +279,10 @@
   }
 
   function plainTitle(b) {
+    if (b.title && b.t !== "flight") return b.title;
     switch (b.t) {
+      case "train": return "Easy exercise";
+      case "sync": return "Garmin Time Sync";
       case "seek": return "Get bright light";
       case "avoid": return "Wear sunglasses";
       case "sleep": return "Sleep";
@@ -464,7 +471,7 @@
   function renderUpNext() {
     const now = nowMs();
     const horizon = now - 10 * 60000;
-    const prefer = new Set(["mel", "meal", "ncaff", "nap", "seek", "avoid", "sleep"]);
+    const prefer = new Set(["mel", "meal", "ncaff", "nap", "seek", "avoid", "sleep", "train", "sync"]);
     const candidates = abs.blocks
       .filter((b) => b.endMs >= horizon && b.t !== "caff")
       .sort((a, c) => a.startMs - c.startMs);
