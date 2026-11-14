@@ -151,6 +151,9 @@ body {
   min-height: 48px; padding: 4px 2px;
   color: var(--accent); cursor: pointer;
 }
+.tz-head:last-child {
+  justify-content: flex-end;
+}
 .tz-head .tz-abbr {
   font-size: 0.9375rem; font-weight: 750; letter-spacing: 0.02em;
   pointer-events: none;
