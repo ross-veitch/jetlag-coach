@@ -2,6 +2,50 @@
   const data = window.JETLAG_DATA;
   const trip = data.trips[0];
 
+  // Generate algorithm-based recommendations for flights
+  if (window.CircadianAlgorithm && data.flights) {
+    const algo = window.CircadianAlgorithm;
+    const zoneHistory = algo.buildZoneHistory(trip);
+    
+    for (const flight of data.flights) {
+      if (!flight.from || !flight.to) continue;
+      
+      const airportTz = {
+        'SIN': 'Asia/Singapore',
+        'DXB': 'Asia/Dubai',
+        'MIA': 'America/New_York',
+      };
+      
+      const dep = Date.parse(flight.dep);
+      const arr = Date.parse(flight.arr);
+      const durationHours = (arr - dep) / 3600000;
+      const bodyClock = algo.calculateBodyClock(zoneHistory, dep);
+      
+      const flightData = {
+        dep,
+        arr,
+        fromTz: airportTz[flight.from] || 'UTC',
+        toTz: airportTz[flight.to] || 'UTC',
+        durationHours,
+      };
+      
+      // Estimate sleep debt from recent flights (simple heuristic)
+      let sleepDebt = 0;
+      const daysSinceDeparture = (dep - Date.parse(trip.zoneSegments[0].from)) / 86400000;
+      if (daysSinceDeparture < 4) {
+        sleepDebt = 1; // Accumulating debt in first few days
+      }
+      
+      const context = { sleepDebt };
+      const plan = algo.generateFlightPlan(flightData, bodyClock, context);
+      const advice = algo.formatFlightAdvice(plan, flightData);
+      
+      // Replace the detail field with algorithm-generated advice
+      flight.detail = advice;
+      flight._algorithmPlan = plan; // Store for debugging
+    }
+  }
+
   const CITIES = [
     { id: "singapore", name: "Singapore", abbr: "SGT", tz: "Asia/Singapore", code: "SIN" },
     { id: "dubai", name: "Dubai", abbr: "GST", tz: "Asia/Dubai", code: "DXB" },
