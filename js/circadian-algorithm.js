@@ -450,25 +450,40 @@
 
   /**
    * Process all flights in a trip and generate recommendations
+   * @param {Object} tripData - Trip data with zoneSegments
+   * @param {Array} flights - Array of flight objects with dep, arr, fromTz, toTz
+   * @param {Object} options - { onError: fn(flight, error) }
+   * @returns {Object} recommendations by flight id, or null if error
    */
-  function generateTripRecommendations(tripData, flights) {
+  function generateTripRecommendations(tripData, flights, options = {}) {
     const zoneHistory = buildZoneHistory(tripData);
     const recommendations = {};
+    const { onError } = options;
     
     for (const flight of flights) {
       const dep = Date.parse(flight.dep);
       const arr = Date.parse(flight.arr);
       const durationHours = (arr - dep) / 3600000;
       
-      // Determine airport timezones (simplified mapping)
-      const airportTz = {
-        'SIN': 'Asia/Singapore',
-        'DXB': 'Asia/Dubai',
-        'MIA': 'America/New_York',
-      };
-      
-      const fromTz = airportTz[flight.from] || 'UTC';
-      const toTz = airportTz[flight.to] || 'UTC';
+      // Require explicit timezones - no silent fallback
+      if (!flight.fromTz || !flight.toTz) {
+        const error = `Flight ${flight.id || flight.label}: Missing timezone information. ` +
+          `fromTz="${flight.fromTz || 'missing'}", toTz="${flight.toTz || 'missing'}". ` +
+          `Cannot generate circadian advice without airport timezones.`;
+        
+        if (onError) {
+          onError(flight, error);
+        } else {
+          console.error(error);
+        }
+        
+        recommendations[flight.id] = {
+          error,
+          plan: null,
+          advice: null,
+        };
+        continue;
+      }
       
       // Calculate body clock at departure
       const bodyClock = calculateBodyClock(zoneHistory, dep);
@@ -482,8 +497,8 @@
       const plan = generateFlightPlan({
         dep,
         arr,
-        fromTz,
-        toTz,
+        fromTz: flight.fromTz,
+        toTz: flight.toTz,
         durationHours,
       }, bodyClock, context);
       
@@ -492,6 +507,7 @@
       recommendations[flight.id] = {
         plan,
         advice,
+        error: null,
       };
     }
     

@@ -20,6 +20,7 @@
     isNightTime,
     generateFlightPlan,
     formatFlightAdvice,
+    generateTripRecommendations,
   } = window.CircadianAlgorithm;
 
   let testCount = 0;
@@ -352,6 +353,132 @@
     console.log(`  Melatonin at boarding: ${plan.melatonin.atBoarding ? 'YES' : 'NO'}`);
     console.log(`  Sleep: ${plan.sleep.totalHours.toFixed(1)}h - ${plan.sleep.strategy}`);
   }
+
+  // === INTERNATIONAL ROUTE TESTS ===
+  console.log('\n--- International Route Tests ---');
+
+  // Test 1: LHR to SYD via SIN (departs destination morning)
+  console.log('\nTest Route: LHR → SIN');
+  const lhrSin = {
+    dep: Date.parse('2026-12-01T22:00:00+00:00'), // 22:00 London = 06:00 Singapore (dest morning)
+    arr: Date.parse('2026-12-02T17:00:00+08:00'), // 17:00 Singapore next day
+    fromTz: 'Europe/London',
+    toTz: 'Asia/Singapore',
+    durationHours: 13,
+  };
+  
+  const planLhrSin = generateFlightPlan(lhrSin, 'Europe/London');
+  console.log('LHR→SIN:', planLhrSin.sleep.strategy);
+  // Departure is 06:00 Singapore time (destination morning), so limited sleep is correct
+  assert(planLhrSin.sleep.totalHours <= 4, 'LHR→SIN (dep at dest morning) has limited sleep');
+  assert(!planLhrSin.melatonin.atBoarding, 'LHR→SIN: No melatonin at dest morning');
+
+  // Test 2: JFK to LHR red-eye (departs early dest morning)
+  console.log('\nTest Route: JFK → LHR red-eye');
+  const jfkLhr = {
+    dep: Date.parse('2026-12-01T23:00:00-05:00'), // 23:00 New York = 04:00 London (early morning/night)
+    arr: Date.parse('2026-12-02T11:00:00+00:00'), // 11:00 London next day
+    fromTz: 'America/New_York',
+    toTz: 'Europe/London',
+    durationHours: 7,
+  };
+  
+  const planJfkLhr = generateFlightPlan(jfkLhr, 'America/New_York');
+  console.log('JFK→LHR:', planJfkLhr.sleep.strategy);
+  // Departure is 04:00 London (still night < 06:00), arriving at destination morning
+  // Red-eye with arrival in dest morning - sleep on plane is appropriate, melatonin at 04:00 is acceptable
+  assert(planJfkLhr.sleep.totalHours > 3, 'JFK→LHR red-eye has substantial sleep');
+
+  // Test 3: SFO to NRT (trans-Pacific)
+  console.log('\nTest Route: SFO → NRT');
+  const sfoNrt = {
+    dep: Date.parse('2026-12-01T12:00:00-08:00'), // 12:00 San Francisco
+    arr: Date.parse('2026-12-02T16:00:00+09:00'), // 16:00 Tokyo next day
+    fromTz: 'America/Los_Angeles',
+    toTz: 'Asia/Tokyo',
+    durationHours: 11,
+  };
+  
+  const planSfoNrt = generateFlightPlan(sfoNrt, 'America/Los_Angeles');
+  console.log('SFO→NRT:', planSfoNrt.sleep.strategy);
+  assert(planSfoNrt.sleep.totalHours > 0, 'SFO→NRT long flight has sleep recommendation');
+
+  // Test 4: SYD to LAX (crosses date line)
+  console.log('\nTest Route: SYD → LAX');
+  const sydLax = {
+    dep: Date.parse('2026-12-01T10:00:00+11:00'), // 10:00 Sydney
+    arr: Date.parse('2026-12-01T06:00:00-08:00'), // 06:00 LA same calendar day
+    fromTz: 'Australia/Sydney',
+    toTz: 'America/Los_Angeles',
+    durationHours: 13,
+  };
+  
+  const planSydLax = generateFlightPlan(sydLax, 'Australia/Sydney');
+  console.log('SYD→LAX:', planSydLax.sleep.strategy);
+  assert(planSydLax.sleep.totalHours > 0, 'SYD→LAX has sleep recommendation');
+
+  // Test 5: CDG to JNB (Europe to Africa)
+  console.log('\nTest Route: CDG → JNB');
+  const cdgJnb = {
+    dep: Date.parse('2026-12-01T20:00:00+01:00'), // 20:00 Paris
+    arr: Date.parse('2026-12-02T07:30:00+02:00'), // 07:30 Johannesburg next day
+    fromTz: 'Europe/Paris',
+    toTz: 'Africa/Johannesburg',
+    durationHours: 10.5,
+  };
+  
+  const planCdgJnb = generateFlightPlan(cdgJnb, 'Europe/Paris');
+  console.log('CDG→JNB:', planCdgJnb.sleep.strategy);
+  assert(planCdgJnb.sleep.totalHours > 0, 'CDG→JNB overnight has sleep');
+
+  // Test 6: SIN to KUL (short hop)
+  console.log('\nTest Route: SIN → KUL (short hop)');
+  const sinKul = {
+    dep: Date.parse('2026-12-01T14:00:00+08:00'), // 14:00 Singapore
+    arr: Date.parse('2026-12-01T15:00:00+08:00'), // 15:00 Kuala Lumpur
+    fromTz: 'Asia/Singapore',
+    toTz: 'Asia/Kuala_Lumpur',
+    durationHours: 1,
+  };
+  
+  const planSinKul = generateFlightPlan(sinKul, 'Asia/Singapore');
+  console.log('SIN→KUL:', planSinKul.sleep.strategy);
+  assert(planSinKul.sleep.totalHours <= 2, 'SIN→KUL short hop has minimal sleep');
+
+  // === UNKNOWN AIRPORT TEST ===
+  console.log('\n--- Unknown Airport Error Handling ---');
+
+  const flightsWithUnknown = [
+    {
+      id: 'TEST001',
+      label: 'TEST001 XXX→YYY',
+      from: 'XXX',
+      to: 'YYY',
+      dep: '2026-12-01T10:00:00+00:00',
+      arr: '2026-12-01T20:00:00+00:00',
+      // Missing fromTz and toTz
+    }
+  ];
+
+  const testTrip = {
+    zoneSegments: [
+      { from: '2026-12-01T00:00:00+00:00', tz: 'UTC', label: 'Test', abbr: 'UTC' }
+    ]
+  };
+
+  let errorCaught = false;
+  const errorHandler = (flight, error) => {
+    console.log(`  Error handler called for ${flight.id}: ${error.substring(0, 50)}...`);
+    errorCaught = true;
+  };
+
+  const recommendations = generateTripRecommendations(testTrip, flightsWithUnknown, { onError: errorHandler });
+  
+  assert(errorCaught, 'Unknown airport triggers error handler');
+  assert(recommendations['TEST001'].error !== null, 'Unknown airport generates error in recommendations');
+  assert(recommendations['TEST001'].advice === null, 'Unknown airport produces no advice');
+
+  console.log('✓ Unknown airports properly rejected with clear error messages');
 
   // === SUMMARY ===
   console.log('\n=== Test Summary ===');
