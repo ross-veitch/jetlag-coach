@@ -26,6 +26,8 @@ window.JETLAG_DATA = {
     {
       id: "EK315",
       label: "EK315 SIN→DXB",
+      from: "SIN",
+      to: "DXB",
       detail:
         "Day flight (~7.5 h). One nap of up to 90 min early in the flight (eye mask, alarm), then stay awake. Coffee OK until 13:00 GST. Land 14:00 GST: Garmin Time Sync, then daylight until sunset. Bed 22:00 GST.",
       dep: "2026-11-14T10:30:00+08:00",
@@ -34,6 +36,8 @@ window.JETLAG_DATA = {
     {
       id: "EK213",
       label: "EK213 DXB→MIA",
+      from: "DXB",
+      to: "MIA",
       detail:
         "Overnight, ~16.5 h. Bank 2.5 h of sleep Sun evening first. Melatonin 0.5 mg at boarding, skip the meal, sleep 6–7 h right after takeoff. Then ~3 h dim, and a 90-min nap ending ~2 h before landing. Land 09:50 EST: Garmin Time Sync, daylight all day, no nap, bed 22:00 EST.",
       dep: "2026-11-16T02:15:00+04:00",
@@ -42,6 +46,8 @@ window.JETLAG_DATA = {
     {
       id: "EK214",
       label: "EK214 MIA→DXB",
+      from: "MIA",
+      to: "DXB",
       detail:
         "Depart near midnight Miami. Sleep the first ~7 h (1 mg melatonin pre-board). Wake for Dubai evening arrival; dim light; bed ~00:30 GST.",
       dep: "2026-11-20T23:55:00-05:00",
@@ -50,6 +56,8 @@ window.JETLAG_DATA = {
     {
       id: "EK352",
       label: "EK352 DXB→SIN",
+      from: "DXB",
+      to: "SIN",
       detail:
         "Day flight (~7.5 h). Mostly awake. Optional 20-min nap mid-flight. On landing: melatonin ~1 mg, bed ~00:20 SGT, morning light next day.",
       dep: "2026-11-27T10:15:00+04:00",
