@@ -1,4 +1,13 @@
 
+# Dependencies
+node_modules/
+package-lock.json
+
+# Test artifacts
+test-results/
+playwright-report/
+test/screenshots/*.png
+
 # design references (not deployed)
 ref/
 shots/

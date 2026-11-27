@@ -438,11 +438,17 @@
     }
     
     // Step 5: Generate in-flight recommendations
-    const flightDay = dailyPlan[preTripDays];
+    // CRITICAL: Use CBTmin/DLMO from the START of flight day (end of previous day),
+    // not the end of flight day, because boarding happens before that day's shift.
+    // If preTripDays > 0, use the previous day's shifted values.
+    // If preTripDays === 0, use initial values.
+    const boardingCBTmin = preTripDays > 0 ? dailyPlan[preTripDays - 1].cbtmin : initialCBTmin;
+    const boardingDLMO = preTripDays > 0 ? dailyPlan[preTripDays - 1].dlmo : initialDLMO;
+    
     const inFlightMelatonin = generateInFlightMelatonin(
       { dep: depMs, arr: arrMs, durationHours: (arrMs - depMs) / 3600000, fromTz, toTz },
-      flightDay.cbtmin,
-      flightDay.dlmo,
+      boardingCBTmin,
+      boardingDLMO,
       recommendedDirection,
       recommendedMagnitude
     );
