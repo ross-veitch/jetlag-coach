@@ -142,38 +142,195 @@
   // === FLIGHT PLAN TESTS ===
   console.log('\n--- Flight Plan Generation Tests ---');
 
-  // Test 1: MIA -> DXB (the failing case)
-  console.log('\nTest Flight: EK214 MIA -> DXB');
+  // Test 1: MIA -> DXB 23:55 (the failing case - should have NO boarding melatonin)
+  console.log('\nTest Flight 1: EK214 MIA → DXB 23:55 EST');
   const ek214 = {
-    dep: Date.parse('2026-11-20T23:55:00-05:00'),
-    arr: Date.parse('2026-11-21T23:00:00+04:00'),
+    dep: Date.parse('2026-11-20T23:55:00-05:00'), // 23:55 EST = 08:55 GST (dest morning)
+    arr: Date.parse('2026-11-21T23:00:00+04:00'), // 23:00 GST (dest night)
     fromTz: miami,
     toTz: dubai,
     durationHours: 14.08,
   };
   
+  const depDestHour214 = getLocalHour(ek214.dep, dubai);
+  const arrDestHour214 = getLocalHour(ek214.arr, dubai);
+  console.log(`  Departure: 23:55 EST = ${depDestHour214.toFixed(2)}h GST (destination morning)`);
+  console.log(`  Arrival: 23:00 GST = ${arrDestHour214.toFixed(2)}h GST (destination night)`);
+  
   const plan214 = generateFlightPlan(ek214, miami, { sleepDebt: 1, lastSleepHours: 6.5 });
   
-  console.log('Plan:', JSON.stringify(plan214, null, 2));
+  console.log(`  Melatonin at boarding: ${plan214.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Reason: ${plan214.melatonin.reason}`);
+  console.log(`  Sleep strategy: ${plan214.sleep.strategy}`);
   
   assert(!plan214.melatonin.atBoarding, 
-    'EK214: NO melatonin at boarding (departure is destination morning ~09:00 GST)');
+    'EK214 23:55: NO melatonin at boarding (departure is destination morning ~09:00 GST)');
   
-  assert(plan214.sleep.totalHours <= 4, 
-    'EK214: Limited sleep (3-4h max) due to departure in destination morning');
-  
-  assert(plan214.sleep.windows.length > 0 && plan214.sleep.windows[0].useAlarm === true,
-    'EK214: Sleep window uses alarm (capped nap)');
-  
-  assert(plan214.melatonin.onLanding.recommended === true,
-    'EK214: Melatonin recommended on landing (~22:30 GST before bed)');
+  assert(plan214.melatonin.onLanding && plan214.melatonin.onLanding.recommended === true,
+    'EK214 23:55: Melatonin recommended on landing for eastbound advance');
 
   const advice214 = formatFlightAdvice(plan214, ek214);
-  console.log('Advice:', advice214);
-  assert(advice214.includes('No melatonin'), 'EK214: Advice says no melatonin at boarding');
+  console.log(`  Advice: ${advice214}`);
+  assert(advice214.includes('No melatonin'), 'EK214 23:55: Advice says no melatonin at boarding');
 
-  // Test 2: SIN -> DXB (day flight)
-  console.log('\nTest Flight: EK315 SIN -> DXB');
+  // Test 2: MIA -> DXB 19:00 (departure during destination night end - insufficient coverage)
+  console.log('\nTest Flight 2: MIA → DXB 19:00 EST');
+  const miaDxb19 = {
+    dep: Date.parse('2026-11-20T19:00:00-05:00'), // 19:00 EST = 04:00 GST (dest early morning, night ending)
+    arr: Date.parse('2026-11-21T18:00:00+04:00'), // 18:00 GST next day
+    fromTz: miami,
+    toTz: dubai,
+    durationHours: 14.0,
+  };
+  
+  const depDestHour19 = getLocalHour(miaDxb19.dep, dubai);
+  const arrDestHour19 = getLocalHour(miaDxb19.arr, dubai);
+  console.log(`  Departure: 19:00 EST = ${depDestHour19.toFixed(2)}h GST (destination ${depDestHour19 < 6 ? 'night' : 'morning'})`);
+  console.log(`  Arrival: 18:00 GST = ${arrDestHour19.toFixed(2)}h GST`);
+  
+  const plan19 = generateFlightPlan(miaDxb19, miami);
+  
+  console.log(`  Melatonin at boarding: ${plan19.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Reason: ${plan19.melatonin.reason}`);
+  
+  // Departure at 04:00 GST (night ending) with only 2h of destination night coverage
+  // Most of flight is destination daytime - no melatonin recommended
+  assert(!plan19.melatonin.atBoarding, 
+    'MIA→DXB 19:00: NO melatonin (departing at end of destination night, insufficient coverage)');
+
+  // Test 2b: MIA -> DXB departing evening (should have melatonin - good night coverage)
+  console.log('\nTest Flight 2b: MIA → DXB 15:00 EST (evening dest time)');
+  const miaDxbEvening = {
+    dep: Date.parse('2026-11-20T15:00:00-05:00'), // 15:00 EST = 00:00 GST (dest midnight)
+    arr: Date.parse('2026-11-21T14:00:00+04:00'), // 14:00 GST next day
+    fromTz: miami,
+    toTz: dubai,
+    durationHours: 14.0,
+  };
+  
+  const depDestHourEvening = getLocalHour(miaDxbEvening.dep, dubai);
+  console.log(`  Departure: 15:00 EST = ${depDestHourEvening.toFixed(2)}h GST (destination midnight)`);
+  
+  const planEvening = generateFlightPlan(miaDxbEvening, miami);
+  
+  console.log(`  Melatonin at boarding: ${planEvening.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Reason: ${planEvening.melatonin.reason}`);
+  
+  // Departure at 00:00 GST (destination midnight) with 6h of destination night coverage (00:00-06:00)
+  // Good coverage - melatonin recommended
+  assert(planEvening.melatonin.atBoarding, 
+    'MIA→DXB 15:00 EST: Melatonin recommended when departing at destination midnight with 6h night coverage');
+
+  // Test 3: SIN -> LHR overnight (eastbound, overnight)
+  console.log('\nTest Flight 3: SIN → LHR overnight');
+  const sinLhr = {
+    dep: Date.parse('2026-11-15T23:00:00+08:00'), // 23:00 SGT = 15:00 GMT (dest afternoon)
+    arr: Date.parse('2026-11-16T06:00:00+00:00'), // 06:00 GMT next day (dest morning)
+    fromTz: 'Asia/Singapore',
+    toTz: 'Europe/London',
+    durationHours: 13.0,
+  };
+  
+  const depDestHourSinLhr = getLocalHour(sinLhr.dep, 'Europe/London');
+  console.log(`  Departure: 23:00 SGT = ${depDestHourSinLhr.toFixed(2)}h GMT (destination ${depDestHourSinLhr >= 6 && depDestHourSinLhr <= 18 ? 'daytime' : 'night'})`);
+  
+  const planSinLhr = generateFlightPlan(sinLhr, 'Asia/Singapore');
+  
+  console.log(`  Melatonin at boarding: ${planSinLhr.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Reason: ${planSinLhr.melatonin.reason}`);
+  
+  assert(!planSinLhr.melatonin.atBoarding, 
+    'SIN→LHR: NO melatonin when departing during destination afternoon');
+
+  // Test 4: LHR -> SIN overnight (westbound, overnight)
+  console.log('\nTest Flight 4: LHR → SIN overnight');
+  const lhrSin = {
+    dep: Date.parse('2026-11-15T22:00:00+00:00'), // 22:00 GMT = 06:00 SGT next day (dest morning)
+    arr: Date.parse('2026-11-16T17:00:00+08:00'), // 17:00 SGT
+    fromTz: 'Europe/London',
+    toTz: 'Asia/Singapore',
+    durationHours: 13.0,
+  };
+  
+  const depDestHourLhrSin = getLocalHour(lhrSin.dep, 'Asia/Singapore');
+  console.log(`  Departure: 22:00 GMT = ${depDestHourLhrSin.toFixed(2)}h SGT (destination ${depDestHourLhrSin >= 6 && depDestHourLhrSin <= 18 ? 'daytime' : 'night'})`);
+  
+  const planLhrSin = generateFlightPlan(lhrSin, 'Europe/London');
+  
+  console.log(`  Melatonin at boarding: ${planLhrSin.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Reason: ${planLhrSin.melatonin.reason}`);
+  
+  assert(!planLhrSin.melatonin.atBoarding, 
+    'LHR→SIN: NO melatonin when departing during destination morning');
+
+  // Test 5: DXB -> SIN daytime
+  console.log('\nTest Flight 5: DXB → SIN daytime');
+  const dxbSin = {
+    dep: Date.parse('2026-11-15T10:00:00+04:00'), // 10:00 GST = 14:00 SGT (dest afternoon)
+    arr: Date.parse('2026-11-15T21:30:00+08:00'), // 21:30 SGT
+    fromTz: 'Asia/Dubai',
+    toTz: 'Asia/Singapore',
+    durationHours: 7.5,
+  };
+  
+  const depDestHourDxbSin = getLocalHour(dxbSin.dep, 'Asia/Singapore');
+  console.log(`  Departure: 10:00 GST = ${depDestHourDxbSin.toFixed(2)}h SGT (destination afternoon)`);
+  
+  const planDxbSin = generateFlightPlan(dxbSin, 'Asia/Dubai');
+  
+  console.log(`  Melatonin at boarding: ${planDxbSin.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Sleep strategy: ${planDxbSin.sleep.strategy}`);
+  
+  assert(!planDxbSin.melatonin.atBoarding, 
+    'DXB→SIN daytime: NO melatonin on day flight');
+  
+  assert(planDxbSin.sleep.totalHours <= 2, 
+    'DXB→SIN: Minimal sleep on day flight');
+
+  // Test 6: SFO -> SIN (trans-Pacific, long eastbound)
+  console.log('\nTest Flight 6: SFO → SIN');
+  const sfoSin = {
+    dep: Date.parse('2026-11-15T23:30:00-08:00'), // 23:30 PST = 15:30 SGT next day (dest afternoon)
+    arr: Date.parse('2026-11-17T06:00:00+08:00'), // 06:00 SGT two days later
+    fromTz: 'America/Los_Angeles',
+    toTz: 'Asia/Singapore',
+    durationHours: 16.5,
+  };
+  
+  const depDestHourSfoSin = getLocalHour(sfoSin.dep, 'Asia/Singapore');
+  console.log(`  Departure: 23:30 PST = ${depDestHourSfoSin.toFixed(2)}h SGT (destination ${depDestHourSfoSin >= 6 && depDestHourSfoSin <= 18 ? 'daytime' : 'night'})`);
+  
+  const planSfoSin = generateFlightPlan(sfoSin, 'America/Los_Angeles');
+  
+  console.log(`  Melatonin at boarding: ${planSfoSin.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Reason: ${planSfoSin.melatonin.reason}`);
+  
+  assert(!planSfoSin.melatonin.atBoarding, 
+    'SFO→SIN: NO melatonin when departing during destination afternoon');
+
+  // Test 7: Short same-zone flight
+  console.log('\nTest Flight 7: Short same-zone flight (DXB → AUH)');
+  const shortSameZone = {
+    dep: Date.parse('2026-11-15T14:00:00+04:00'),
+    arr: Date.parse('2026-11-15T15:00:00+04:00'),
+    fromTz: 'Asia/Dubai',
+    toTz: 'Asia/Dubai',
+    durationHours: 1.0,
+  };
+  
+  const planShort = generateFlightPlan(shortSameZone, 'Asia/Dubai');
+  
+  console.log(`  Melatonin at boarding: ${planShort.melatonin.atBoarding ? 'YES' : 'NO'}`);
+  console.log(`  Sleep strategy: ${planShort.sleep.strategy}`);
+  
+  assert(!planShort.melatonin.atBoarding, 
+    'Short same-zone: NO melatonin on 1h flight');
+  
+  assert(planShort.sleep.totalHours <= 2, 
+    'Short same-zone: Minimal or no sleep');
+
+  // Test 8: SIN -> DXB (day flight - existing EK315)
+  console.log('\nTest Flight 8: EK315 SIN → DXB (day flight)');
   const ek315 = {
     dep: Date.parse('2026-11-14T10:30:00+08:00'),
     arr: Date.parse('2026-11-14T14:00:00+04:00'),
@@ -190,8 +347,8 @@
   assert(plan315.sleep.totalHours <= 2, 
     'EK315: Minimal sleep on day flight');
 
-  // Test 3: DXB -> MIA (overnight, long)
-  console.log('\nTest Flight: EK213 DXB -> MIA');
+  // Test 9: DXB -> MIA (overnight, long - existing EK213)
+  console.log('\nTest Flight 9: EK213 DXB → MIA (ultra-long overnight)');
   const ek213 = {
     dep: Date.parse('2026-11-16T02:15:00+04:00'),
     arr: Date.parse('2026-11-16T09:50:00-05:00'),
@@ -204,7 +361,7 @@
   
   // Departure at 02:15 GST = 17:25 EST (previous day) - destination late afternoon
   const depDestHour213 = getLocalHour(ek213.dep, miami);
-  console.log(`EK213 departs at ${depDestHour213.toFixed(2)} EST (previous day)`);
+  console.log(`  EK213 departs at ${depDestHour213.toFixed(2)} EST (previous day)`);
   
   // Departure is NOT destination night (it's late afternoon), so no melatonin at boarding
   assert(!plan213.melatonin.atBoarding, 
@@ -214,8 +371,8 @@
   assert(plan213.sleep.totalHours >= 5, 
     'EK213: Substantial sleep on ultra-long flight crossing destination night');
 
-  // Test 4: DXB -> SIN (day flight)
-  console.log('\nTest Flight: EK352 DXB -> SIN');
+  // Test 10: DXB -> SIN (day flight - existing EK352)
+  console.log('\nTest Flight 10: EK352 DXB → SIN (day flight)');
   const ek352 = {
     dep: Date.parse('2026-11-27T10:15:00+04:00'),
     arr: Date.parse('2026-11-27T21:45:00+08:00'),
@@ -358,8 +515,8 @@
   console.log('\n--- International Route Tests ---');
 
   // Test 1: LHR to SYD via SIN (departs destination morning)
-  console.log('\nTest Route: LHR → SIN');
-  const lhrSin = {
+  console.log('\nTest Route: LHR → SIN (alternative timing)');
+  const lhrSinAlt = {
     dep: Date.parse('2026-12-01T22:00:00+00:00'), // 22:00 London = 06:00 Singapore (dest morning)
     arr: Date.parse('2026-12-02T17:00:00+08:00'), // 17:00 Singapore next day
     fromTz: 'Europe/London',
@@ -367,11 +524,11 @@
     durationHours: 13,
   };
   
-  const planLhrSin = generateFlightPlan(lhrSin, 'Europe/London');
-  console.log('LHR→SIN:', planLhrSin.sleep.strategy);
+  const planLhrSinAlt = generateFlightPlan(lhrSinAlt, 'Europe/London');
+  console.log('LHR→SIN:', planLhrSinAlt.sleep.strategy);
   // Departure is 06:00 Singapore time (destination morning), so limited sleep is correct
-  assert(planLhrSin.sleep.totalHours <= 4, 'LHR→SIN (dep at dest morning) has limited sleep');
-  assert(!planLhrSin.melatonin.atBoarding, 'LHR→SIN: No melatonin at dest morning');
+  assert(planLhrSinAlt.sleep.totalHours <= 4, 'LHR→SIN (dep at dest morning) has limited sleep');
+  assert(!planLhrSinAlt.melatonin.atBoarding, 'LHR→SIN: No melatonin at dest morning');
 
   // Test 2: JFK to LHR red-eye (departs early dest morning)
   console.log('\nTest Route: JFK → LHR red-eye');

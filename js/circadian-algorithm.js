@@ -1,54 +1,66 @@
 /**
- * Circadian-based jet lag algorithm
- * Generates sleep, melatonin, light, and caffeine recommendations for any trip
- * Based on destination time and body clock adaptation
+ * Circadian Algorithm v3 - Clean PRC-Based Implementation
+ * 
+ * Complete rewrite based on scientific specification:
+ * - Single phase state: DLMO in UTC, CBTmin = DLMO + 7.5h
+ * - Target: habitual sleep phase in destination local time
+ * - Daily simulation with proper intervention logic
+ * - Display in traveler's physical timezone each day
+ * 
+ * References:
+ * - Khalsa et al. 2003: Light PRC
+ * - Burgess et al. 2010: Melatonin PRC (0.5mg dosing)
+ * - Eastman & Burgess 2009: Pre-flight adaptation protocols
  */
 
 (function() {
   'use strict';
 
+  // ============================================================================
+  // CONSTANTS
+  // ============================================================================
+
+  const CBTMIN_OFFSET_FROM_DLMO = 7.5; // hours
+  const DLMO_OFFSET_FROM_SLEEP = 2.0;  // hours before bedtime
+  
+  // Shift rate caps (hours per day)
+  const MAX_ADVANCE_RATE = 1.5;
+  const MIN_ADVANCE_RATE = 1.0;
+  const MAX_DELAY_RATE = 2.0;
+  const MIN_DELAY_RATE = 1.5;
+  
+  // PRC windows (Burgess 2010 for 0.5mg melatonin)
+  const MELATONIN_ADVANCE_PEAK = 3.0;  // hours before DLMO
+  const MELATONIN_ADVANCE_WINDOW = 1.5; // tolerance ±1.5h (1.5-4.5h before DLMO)
+  
+  // Antidromic threshold (prefer opposite direction for shifts > 9h)
+  const ANTIDROMIC_THRESHOLD = 9.0;
+
+  // ============================================================================
+  // UTILITY FUNCTIONS
+  // ============================================================================
+
   /**
-   * Calculate body clock timezone given time spent in each zone
-   * @param {Array} zoneHistory - [{tz, startMs, endMs}] in chronological order
-   * @param {number} atMs - timestamp to evaluate body clock
-   * @returns {string} timezone the body is adapted to
+   * Normalize hours to 0-24 range
    */
-  function calculateBodyClock(zoneHistory, atMs) {
-    if (!zoneHistory || zoneHistory.length === 0) return 'UTC';
-    
-    // Find current zone segment
-    let currentZone = zoneHistory[0];
-    for (const seg of zoneHistory) {
-      if (atMs >= seg.startMs) {
-        currentZone = seg;
-      }
-    }
-    
-    // Calculate time in current zone
-    const timeInZone = atMs - currentZone.startMs;
-    const hoursInZone = timeInZone / 3600000;
-    
-    // If less than ~4 days (96 hours), consider previous zone
-    if (hoursInZone < 96 && zoneHistory.length > 1) {
-      const prevIdx = zoneHistory.indexOf(currentZone) - 1;
-      if (prevIdx >= 0) {
-        const prevZone = zoneHistory[prevIdx];
-        const hoursInPrev = (currentZone.startMs - prevZone.startMs) / 3600000;
-        
-        // If previous stay was longer, body still more adapted to it
-        if (hoursInPrev > hoursInZone * 2) {
-          return prevZone.tz;
-        }
-      }
-    }
-    
-    return currentZone.tz;
+  function normalizeHours(h) {
+    while (h < 0) h += 24;
+    while (h >= 24) h -= 24;
+    return h;
   }
 
   /**
-   * Calculate timezone offset in hours
+   * Calculate circular distance between two hours (0-24)
    */
-  function getTimezoneOffset(tz, ms) {
+  function circularDistance(a, b) {
+    const diff = Math.abs(a - b);
+    return Math.min(diff, 24 - diff);
+  }
+
+  /**
+   * Get timezone offset in hours for a given timestamp
+   */
+  function getTzOffsetHours(tz, ms) {
     const date = new Date(ms);
     const utcDate = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
     const tzDate = new Date(date.toLocaleString('en-US', { timeZone: tz }));
@@ -56,27 +68,7 @@
   }
 
   /**
-   * Calculate shift direction and magnitude
-   */
-  function calculateShift(fromTz, toTz, ms) {
-    const fromOffset = getTimezoneOffset(fromTz, ms);
-    const toOffset = getTimezoneOffset(toTz, ms);
-    const rawShift = toOffset - fromOffset;
-    
-    // Normalize to -12 to +12 range
-    let shift = rawShift;
-    if (shift > 12) shift -= 24;
-    if (shift < -12) shift += 24;
-    
-    return {
-      hours: shift,
-      direction: shift > 0 ? 'east' : shift < 0 ? 'west' : 'none',
-      shouldDelay: shift < -8 || shift > 10, // For very large shifts, sometimes delaying is easier than advancing
-    };
-  }
-
-  /**
-   * Get local hour in a timezone (0-23.99)
+   * Get local wall-clock hour (0-23.99) in a timezone at a given timestamp
    */
   function getLocalHour(ms, tz) {
     const f = new Intl.DateTimeFormat('en-GB', {
@@ -86,444 +78,616 @@
       hour12: false,
     });
     const parts = Object.fromEntries(f.formatToParts(new Date(ms)).map(p => [p.type, p.value]));
-    const hour = parseInt(parts.hour, 10);
-    const minute = parseInt(parts.minute, 10);
-    return hour + minute / 60;
+    return parseInt(parts.hour) + parseInt(parts.minute) / 60;
   }
 
   /**
-   * Check if it's nighttime in a timezone (heuristic: 22:00-06:00)
+   * Format hour (0-24) as HH:MM string
    */
-  function isNightTime(ms, tz) {
-    const hour = getLocalHour(ms, tz);
-    return hour >= 22 || hour < 6;
+  function formatHour(h) {
+    const hour = Math.floor(h);
+    const min = Math.round((h - hour) * 60);
+    return `${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`;
   }
 
   /**
-   * Generate in-flight recommendations
-   * @param {Object} flight - {dep, arr, fromTz, toTz, durationHours}
-   * @param {string} bodyClock - timezone body is adapted to
-   * @param {Object} context - {sleepDebt, lastSleepHours, hasShortLayover}
-   * @returns {Object} recommendations
+   * Get time-of-day label from local hour
    */
-  function generateFlightPlan(flight, bodyClock, context = {}) {
-    const { dep, arr, fromTz, toTz, durationHours } = flight;
-    const { sleepDebt = 0, lastSleepHours = 7, hasShortLayover = false } = context;
-    
-    const shift = calculateShift(bodyClock, toTz, dep);
-    
-    // Key destination times
-    const depDestHour = getLocalHour(dep, toTz);
-    const arrDestHour = getLocalHour(arr, toTz);
-    
-    // Target bedtime at destination (22:00-23:00 typical)
-    const targetBedtime = 22.5;
-    
-    const plan = {
-      melatonin: {
-        atBoarding: false,
-        dose: '0.5-1mg',
-        timing: null,
-        reason: '',
-      },
-      sleep: {
-        windows: [],
-        totalHours: 0,
-        strategy: '',
-      },
-      light: {
-        onBoard: 'normal',
-        onLanding: 'seek',
-      },
-      caffeine: {
-        cutoffDestHour: null,
-      },
-    };
+  function getTimeOfDayLabel(h) {
+    if (h >= 5 && h < 12) return 'morning';
+    if (h >= 12 && h < 17) return 'afternoon';
+    if (h >= 17 && h < 21) return 'evening';
+    return 'night';
+  }
 
-    // Determine flight type
-    const isDayFlight = depDestHour >= 6 && depDestHour <= 18 && durationHours < 10;
+  /**
+   * Convert UTC hour to local hour in a timezone at a given day
+   */
+  function utcToLocal(utcHour, tz, dayMs) {
+    // Create a date at the UTC hour on the given day
+    const date = new Date(dayMs);
+    const hours = Math.floor(utcHour);
+    const minutes = Math.round((utcHour - hours) * 60);
+    date.setUTCHours(hours, minutes, 0, 0);
+    return getLocalHour(date.getTime(), tz);
+  }
+
+  /**
+   * Convert local hour in a timezone to UTC hour
+   */
+  function localToUtc(localHour, tz, dayMs) {
+    const tzOffset = getTzOffsetHours(tz, dayMs);
+    return normalizeHours(localHour - tzOffset);
+  }
+
+  // ============================================================================
+  // PHASE ESTIMATION
+  // ============================================================================
+
+  /**
+   * Estimate initial DLMO from habitual sleep in origin timezone
+   * DLMO ≈ bedtime - 2h
+   */
+  function estimateInitialDLMO(habitualSleep, originTz, departureMs) {
+    const { sleepHour } = habitualSleep;
+    const dlmoLocal = normalizeHours(sleepHour - DLMO_OFFSET_FROM_SLEEP);
+    // Convert to UTC for internal calculations
+    return localToUtc(dlmoLocal, originTz, departureMs);
+  }
+
+  /**
+   * Calculate CBTmin from DLMO
+   * CBTmin = DLMO + 7.5h (invariant)
+   */
+  function dlmoToCBTmin(dlmo) {
+    return normalizeHours(dlmo + CBTMIN_OFFSET_FROM_DLMO);
+  }
+
+  /**
+   * Calculate target DLMO (habitual sleep phase in destination timezone)
+   */
+  function calculateTargetDLMO(habitualSleep, destTz, arrivalMs) {
+    const { sleepHour } = habitualSleep;
+    const targetLocal = normalizeHours(sleepHour - DLMO_OFFSET_FROM_SLEEP);
+    // Convert to UTC
+    return localToUtc(targetLocal, destTz, arrivalMs);
+  }
+
+  // ============================================================================
+  // SHIFT CALCULATION
+  // ============================================================================
+
+  /**
+   * Calculate shift direction and magnitude
+   * Implements antidromic logic for large shifts (>9h)
+   */
+  function calculateShift(initialDLMO, targetDLMO) {
+    // Calculate circular distance
+    const circDist = circularDistance(initialDLMO, targetDLMO);
     
-    // Check if flight crosses destination night (more robust for long flights)
-    let crossesDestNight = isNightTime(dep, toTz) || isNightTime(arr, toTz);
-    if (!crossesDestNight && durationHours > 8) {
-      // Check midpoint and quarter points for long flights
-      for (let checkPoint of [0.25, 0.5, 0.75]) {
-        const checkMs = dep + (checkPoint * durationHours * 3600000);
-        if (isNightTime(checkMs, toTz)) {
-          crossesDestNight = true;
-          break;
+    // If already aligned (within 15 min), no shift needed
+    if (circDist < 0.25) {
+      return { direction: 'none', magnitude: 0, rawDiff: 0 };
+    }
+    
+    // Calculate raw difference in UTC
+    let rawDiff = targetDLMO - initialDLMO;
+    
+    // Normalize to -12 to +12 range
+    if (rawDiff > 12) rawDiff -= 24;
+    if (rawDiff < -12) rawDiff += 24;
+    
+    // Determine optimal direction
+    // Advance means shifting earlier (subtracting from DLMO)
+    // Delay means shifting later (adding to DLMO)
+    
+    let direction, magnitude;
+    
+    if (Math.abs(rawDiff) < 0.25) {
+      // Already aligned
+      direction = 'none';
+      magnitude = 0;
+    } else if (rawDiff > 0) {
+      // Target is later in UTC (higher number)
+      // Need to delay (shift later)
+      magnitude = rawDiff;
+      direction = 'delay';
+      
+      // Check antidromic: if delay > 9h, consider advancing instead
+      if (magnitude > ANTIDROMIC_THRESHOLD) {
+        const advanceOption = 24 - magnitude;
+        if (advanceOption < magnitude) {
+          direction = 'advance';
+          magnitude = advanceOption;
+        }
+      }
+    } else {
+      // Target is earlier in UTC (lower number)
+      // Need to advance (shift earlier)
+      magnitude = -rawDiff;
+      direction = 'advance';
+      
+      // Check antidromic: if advance > 9h, consider delaying instead
+      if (magnitude > ANTIDROMIC_THRESHOLD) {
+        const delayOption = 24 - magnitude;
+        if (delayOption < magnitude) {
+          direction = 'delay';
+          magnitude = delayOption;
         }
       }
     }
     
-    const isOvernightFlight = crossesDestNight;
-    const isUltraLong = durationHours >= 14;
+    return { direction, magnitude, rawDiff };
+  }
 
-    // === MELATONIN LOGIC ===
-    // Never at destination morning/daytime when adapting
-    // Only near destination bedtime or when sleep is needed during dest night
+  // ============================================================================
+  // LIGHT TIMING (Khalsa 2003 PRC)
+  // ============================================================================
+
+  /**
+   * Calculate light seek/avoid windows based on CBTmin and direction
+   * 
+   * Advance: seek light after CBTmin, avoid before
+   * Delay: seek light before CBTmin, avoid after
+   */
+  function calculateLightWindows(cbtmin, direction) {
+    if (direction === 'advance') {
+      // Seek: CBTmin + 0.5h to CBTmin + 4h
+      const seekStart = normalizeHours(cbtmin + 0.5);
+      const seekEnd = normalizeHours(cbtmin + 4);
+      // Avoid: CBTmin - 4h to CBTmin
+      const avoidStart = normalizeHours(cbtmin - 4);
+      const avoidEnd = cbtmin;
+      return { seekStart, seekEnd, avoidStart, avoidEnd };
+    } else {
+      // Delay: seek before CBTmin
+      // Seek: CBTmin - 6h to CBTmin - 3h (avoid dead zone)
+      const seekStart = normalizeHours(cbtmin - 6);
+      const seekEnd = normalizeHours(cbtmin - 3);
+      // Avoid: CBTmin to CBTmin + 4h
+      const avoidStart = cbtmin;
+      const avoidEnd = normalizeHours(cbtmin + 4);
+      return { seekStart, seekEnd, avoidStart, avoidEnd };
+    }
+  }
+
+  /**
+   * Clip light window to waking hours and format for display
+   */
+  function formatLightAdvice(windows, sleepStart, sleepEnd, localTz, dayMs) {
+    const { seekStart, seekEnd, avoidStart, avoidEnd } = windows;
     
-    if (depDestHour >= 6 && depDestHour <= 18) {
-      // Departing during destination day - NO melatonin at boarding
-      plan.melatonin.atBoarding = false;
-      plan.melatonin.reason = 'Departure is destination daytime - melatonin would shift the wrong direction';
-    } else if (depDestHour >= 20 || depDestHour <= 4) {
-      // Departing during destination evening/night
-      if (isOvernightFlight && durationHours >= 6) {
-        plan.melatonin.atBoarding = true;
-        plan.melatonin.dose = '0.5-1mg';
-        plan.melatonin.timing = '30-60 minutes before boarding';
-        plan.melatonin.reason = 'To help sleep during destination night';
+    // Convert UTC hours to local for display
+    const seekStartLocal = utcToLocal(seekStart, localTz, dayMs);
+    const seekEndLocal = utcToLocal(seekEnd, localTz, dayMs);
+    const avoidStartLocal = utcToLocal(avoidStart, localTz, dayMs);
+    const avoidEndLocal = utcToLocal(avoidEnd, localTz, dayMs);
+    
+    // Check if windows overlap with sleep
+    const sleepStartNorm = normalizeHours(sleepStart);
+    const sleepEndNorm = normalizeHours(sleepEnd);
+    
+    function isAsleep(h) {
+      h = normalizeHours(h);
+      if (sleepStartNorm < sleepEndNorm) {
+        return h >= sleepStartNorm && h < sleepEndNorm;
+      } else {
+        return h >= sleepStartNorm || h < sleepEndNorm;
       }
     }
     
-    // Post-landing melatonin
-    plan.melatonin.onLanding = {
+    function isAwake(h) {
+      return !isAsleep(h);
+    }
+    
+    // Format seek window
+    let seekText;
+    if (isAsleep(seekStartLocal) && isAsleep(seekEndLocal)) {
+      seekText = 'sleep';
+    } else if (isAsleep(seekStartLocal)) {
+      seekText = `on waking until ${formatHour(seekEndLocal)}`;
+    } else if (isAwake(seekStartLocal) && isAwake(seekEndLocal)) {
+      seekText = `${formatHour(seekStartLocal)}–${formatHour(seekEndLocal)}`;
+    } else {
+      seekText = `${formatHour(seekStartLocal)}–${formatHour(seekEndLocal)}`;
+    }
+    
+    // Format avoid window
+    let avoidText;
+    if (isAsleep(avoidStartLocal) && isAsleep(avoidEndLocal)) {
+      avoidText = 'sleep';
+    } else if (isAwake(avoidStartLocal) && isAwake(avoidEndLocal)) {
+      avoidText = `${formatHour(avoidStartLocal)}–${formatHour(avoidEndLocal)}`;
+    } else {
+      avoidText = `${formatHour(avoidStartLocal)}–${formatHour(avoidEndLocal)}`;
+    }
+    
+    return { seek: seekText, avoid: avoidText };
+  }
+
+  // ============================================================================
+  // MELATONIN TIMING (Burgess 2010)
+  // ============================================================================
+
+  /**
+   * Calculate melatonin timing for phase shift
+   * 
+   * Advance: 0.5mg at 3h before DLMO (window: 1.5-4.5h before)
+   * Delay: no melatonin by default (morning light more effective)
+   */
+  function calculateMelatoninAdvice(dlmo, direction, localTz, dayMs) {
+    if (direction !== 'advance') {
+      return { recommended: false, reason: 'Morning light more effective for delays' };
+    }
+    
+    // Phase-shift dose at peak advance window
+    const melUtc = normalizeHours(dlmo - MELATONIN_ADVANCE_PEAK);
+    const melLocal = utcToLocal(melUtc, localTz, dayMs);
+    const timeLabel = getTimeOfDayLabel(melLocal);
+    
+    return {
       recommended: true,
-      timing: '30-60 min before destination bedtime (~22:30 local)',
-      dose: '0.5-1mg',
+      dose: '0.5 mg',
+      purpose: 'phase-shift',
+      timeUtc: melUtc,
+      timeLocal: melLocal,
+      timeStr: formatHour(melLocal),
+      timeLabel: timeLabel,
+      reason: `${formatHour(melLocal)} ${localTz} (${timeLabel}, 3h before DLMO)`
     };
-
-    // === SLEEP WINDOWS LOGIC ===
-    
-    if (isDayFlight) {
-      // Day flight: minimal sleep, stay on dest schedule
-      if (sleepDebt > 2 || lastSleepHours < 5) {
-        // Allow short nap if sleep deprived
-        const napDuration = Math.min(3, 1.5 + sleepDebt * 0.3);
-        plan.sleep.windows.push({
-          startHourAfterDep: 0.5,
-          durationHours: napDuration,
-          type: 'nap',
-          reason: 'Short nap due to sleep debt, then stay awake',
-          useAlarm: true,
-        });
-        plan.sleep.totalHours = napDuration;
-        plan.sleep.strategy = `Capped ${napDuration.toFixed(1)}h nap early in flight (use alarm), then stay awake for rest of flight`;
-      } else {
-        // No sleep or very short nap
-        plan.sleep.windows.push({
-          startHourAfterDep: 1,
-          durationHours: 1.5,
-          type: 'nap',
-          reason: 'Optional short nap if tired',
-          optional: true,
-          useAlarm: true,
-        });
-        plan.sleep.totalHours = 0;
-        plan.sleep.strategy = 'Stay awake or take short nap (max 90 min with alarm), avoid sleeping through destination daytime';
-      }
-      plan.light.onBoard = 'keep lights up after nap';
-      
-    } else if (isOvernightFlight && durationHours >= 10) {
-      // Long overnight: plan sleep around destination night
-      
-      // Find portion of flight that overlaps destination night (22:00-06:00)
-      let destNightStart = null;
-      let destNightEnd = null;
-      let nightSegments = [];
-      
-      // Check each hour of flight to find night segments
-      for (let h = 0; h <= durationHours; h += 0.5) {
-        const flightMs = dep + h * 3600000;
-        const destHour = getLocalHour(flightMs, toTz);
-        
-        if (destHour >= 22 || destHour < 6) {
-          if (destNightStart === null) {
-            destNightStart = h;
-          }
-          destNightEnd = h;
-        } else {
-          if (destNightStart !== null) {
-            nightSegments.push({ start: destNightStart, end: destNightEnd });
-            destNightStart = null;
-            destNightEnd = null;
-          }
-        }
-      }
-      
-      // Capture final segment if still in night
-      if (destNightStart !== null) {
-        nightSegments.push({ start: destNightStart, end: destNightEnd });
-      }
-      
-      // Find longest night segment
-      let longestNight = nightSegments.length > 0 ? nightSegments[0] : null;
-      for (const seg of nightSegments) {
-        if (seg.end - seg.start > longestNight.end - longestNight.start) {
-          longestNight = seg;
-        }
-      }
-      
-      if (longestNight && longestNight.end - longestNight.start >= 4) {
-        // Significant night portion - sleep during it
-        const nightPortionHours = longestNight.end - longestNight.start;
-        const sleepDuration = Math.min(nightPortionHours, 7);
-        
-        // For ultra-long flights, may want to bank sleep before the main sleep
-        if (durationHours >= 15 && longestNight.start > 3) {
-          // Bank 2-3h sleep early, then main sleep during night
-          plan.sleep.windows.push({
-            startHourAfterDep: 0.5,
-            durationHours: 2.5,
-            type: 'bank',
-            reason: 'Bank sleep early on ultra-long flight',
-            useAlarm: true,
-          });
-          plan.sleep.windows.push({
-            startHourAfterDep: longestNight.start,
-            durationHours: sleepDuration,
-            type: 'main',
-            reason: 'Main sleep during destination night',
-            useAlarm: false,
-          });
-          plan.sleep.totalHours = 2.5 + sleepDuration;
-          plan.sleep.strategy = `Bank 2.5h sleep early, then ${sleepDuration.toFixed(1)}h during destination night`;
-        } else {
-          // Single sleep window during night
-          plan.sleep.windows.push({
-            startHourAfterDep: longestNight.start,
-            durationHours: sleepDuration,
-            type: 'main',
-            reason: 'Sleep during destination night hours',
-            useAlarm: false,
-          });
-          plan.sleep.totalHours = sleepDuration;
-          plan.sleep.strategy = `Sleep ${sleepDuration.toFixed(1)}h during destination night`;
-        }
-        plan.light.onBoard = 'dim during sleep, lights up after';
-      } else if (longestNight && longestNight.end - longestNight.start >= 2) {
-        // Some night coverage but not enough for full sleep
-        const nightHours = longestNight.end - longestNight.start;
-        plan.sleep.windows.push({
-          startHourAfterDep: longestNight.start,
-          durationHours: Math.min(nightHours, 4),
-          type: 'nap',
-          reason: 'Sleep during limited destination night window',
-          useAlarm: true,
-        });
-        plan.sleep.totalHours = Math.min(nightHours, 4);
-        plan.sleep.strategy = `Sleep ${Math.min(nightHours, 4).toFixed(1)}h during partial destination night`;
-      } else {
-        // No clear night portion - departing and arriving in day
-        plan.sleep.windows.push({
-          startHourAfterDep: 1,
-          durationHours: 3,
-          type: 'nap',
-          reason: 'Capped nap to avoid sleeping through destination day',
-          useAlarm: true,
-        });
-        plan.sleep.totalHours = 3;
-        plan.sleep.strategy = 'Capped 3h nap with alarm, stay awake to match destination schedule';
-        plan.light.onBoard = 'lights up after nap';
-      }
-      
-    } else if (isOvernightFlight && durationHours < 10) {
-      // Short overnight (red-eye)
-      
-      if (arrDestHour >= 6 && arrDestHour <= 11) {
-        // Landing in dest morning - sleep on board is appropriate
-        const sleepDuration = Math.min(durationHours - 1.5, 6);
-        plan.sleep.windows.push({
-          startHourAfterDep: 0.5,
-          durationHours: sleepDuration,
-          type: 'main',
-          reason: 'Sleep on red-eye to arrive rested for destination morning',
-          useAlarm: false,
-        });
-        plan.sleep.totalHours = sleepDuration;
-        plan.sleep.strategy = `Sleep ${sleepDuration.toFixed(1)}h on red-eye, wake before landing`;
-        plan.light.onBoard = 'dim for sleep';
-      } else {
-        // Landing at other times
-        plan.sleep.windows.push({
-          startHourAfterDep: 0.5,
-          durationHours: 3,
-          type: 'nap',
-          reason: 'Short sleep, wake to adjust to destination',
-          useAlarm: true,
-        });
-        plan.sleep.totalHours = 3;
-        plan.sleep.strategy = 'Short sleep with alarm, adjust to destination';
-      }
-    } else {
-      // Other cases: moderate day flight
-      plan.sleep.windows.push({
-        startHourAfterDep: 2,
-        durationHours: 2,
-        type: 'nap',
-        optional: true,
-        reason: 'Optional short rest',
-        useAlarm: true,
-      });
-      plan.sleep.totalHours = 0;
-      plan.sleep.strategy = 'Stay mostly awake, optional short rest';
-    }
-
-    // === LIGHT EXPOSURE ===
-    
-    if (arrDestHour >= 6 && arrDestHour <= 18) {
-      plan.light.onLanding = 'seek bright light immediately';
-    } else if (arrDestHour >= 18 && arrDestHour <= 22) {
-      plan.light.onLanding = 'moderate light, no sunglasses needed';
-    } else {
-      plan.light.onLanding = 'dim light, prepare for bed soon';
-    }
-
-    // === CAFFEINE ===
-    // Cut off ~8h before destination bedtime
-    plan.caffeine.cutoffDestHour = targetBedtime - 8;
-    if (plan.caffeine.cutoffDestHour < 0) {
-      plan.caffeine.cutoffDestHour += 24;
-    }
-
-    return plan;
   }
 
   /**
-   * Generate human-readable flight advice
+   * Check if a time (in UTC) falls within melatonin PRC advance window
    */
-  function formatFlightAdvice(plan, flight) {
-    const parts = [];
-    
-    // Melatonin
-    if (plan.melatonin.atBoarding) {
-      parts.push(`Take ${plan.melatonin.dose} melatonin ${plan.melatonin.timing}.`);
-    } else {
-      parts.push('No melatonin at boarding.');
-    }
-    
-    // Sleep
-    if (plan.sleep.totalHours > 0) {
-      parts.push(plan.sleep.strategy + '.');
-      for (const window of plan.sleep.windows) {
-        if (window.useAlarm) {
-          parts.push(`Set alarm for ${window.durationHours}h sleep.`);
-          break;
-        }
-      }
-    } else {
-      parts.push('Stay awake during flight.');
-    }
-    
-    // Light
-    if (plan.light.onBoard !== 'normal') {
-      parts.push(plan.light.onBoard.charAt(0).toUpperCase() + plan.light.onBoard.slice(1) + '.');
-    }
-    
-    // Caffeine
-    const cutoffFormatted = Math.floor(plan.caffeine.cutoffDestHour) + ':00';
-    parts.push(`Coffee OK until ~${cutoffFormatted} destination time.`);
-    
-    // On landing
-    parts.push(`On landing: ${plan.light.onLanding}.`);
-    
-    if (plan.melatonin.onLanding.recommended) {
-      parts.push(`Take ${plan.melatonin.onLanding.dose} melatonin ${plan.melatonin.onLanding.timing}.`);
-    }
-    
-    return parts.join(' ');
+  function isInMelatoninWindow(timeUtc, dlmoUtc) {
+    const hoursBefore = normalizeHours(dlmoUtc - timeUtc);
+    // Window: 1.5 to 4.5 hours before DLMO (3h ± 1.5h)
+    return hoursBefore >= (MELATONIN_ADVANCE_PEAK - MELATONIN_ADVANCE_WINDOW) &&
+           hoursBefore <= (MELATONIN_ADVANCE_PEAK + MELATONIN_ADVANCE_WINDOW);
   }
 
   /**
-   * Build zone history from trip data
+   * Check if time falls within sleep window
    */
-  function buildZoneHistory(tripData) {
-    const history = [];
-    const segments = tripData.zoneSegments || [];
+  function isInSleepWindow(timeUtc, dlmoUtc) {
+    const sleepStart = normalizeHours(dlmoUtc + 2); // Sleep ≈ DLMO + 2h
+    const sleepEnd = normalizeHours(dlmoUtc + 10);  // 8-hour sleep window
     
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const startMs = Date.parse(seg.from);
-      const endMs = i < segments.length - 1 ? Date.parse(segments[i + 1].from) : startMs + 365 * 86400000;
-      
-      history.push({
-        tz: seg.tz,
-        startMs,
-        endMs,
-        label: seg.label,
-      });
+    const timeSinceSleep = normalizeHours(timeUtc - sleepStart);
+    return timeSinceSleep < 8;
+  }
+
+  // ============================================================================
+  // DAILY SIMULATION
+  // ============================================================================
+
+  /**
+   * Calculate shift amount for one day based on intervention
+   * 
+   * With intervention (light + melatonin for advances, light for delays):
+   *   Advances: 1.0-1.5 h/day
+   *   Delays: 1.5-2.0 h/day
+   * Without intervention: 0 (no shift)
+   */
+  function getDailyShift(direction, hasIntervention) {
+    if (!hasIntervention) return 0;
+    
+    if (direction === 'advance') {
+      return (MIN_ADVANCE_RATE + MAX_ADVANCE_RATE) / 2; // 1.25 h/day
+    } else {
+      return (MIN_DELAY_RATE + MAX_DELAY_RATE) / 2; // 1.75 h/day
     }
-    
-    return history;
   }
 
   /**
-   * Process all flights in a trip and generate recommendations
-   * @param {Object} tripData - Trip data with zoneSegments
-   * @param {Array} flights - Array of flight objects with dep, arr, fromTz, toTz
-   * @param {Object} options - { onError: fn(flight, error) }
-   * @returns {Object} recommendations by flight id, or null if error
+   * Generate complete trip plan with day-by-day simulation
    */
-  function generateTripRecommendations(tripData, flights, options = {}) {
-    const zoneHistory = buildZoneHistory(tripData);
-    const recommendations = {};
-    const { onError } = options;
+  function generateTripPlan(tripData, options = {}) {
+    const {
+      origin,
+      destination,
+      departureMs,
+      arrivalMs,
+      habitualSleep = { sleepHour: 23, wakeHour: 7 },
+      preTripDays = 2
+    } = tripData;
     
-    for (const flight of flights) {
-      const dep = Date.parse(flight.dep);
-      const arr = Date.parse(flight.arr);
-      const durationHours = (arr - dep) / 3600000;
+    const { timeZone: originTz } = origin;
+    const { timeZone: destTz } = destination;
+    
+    // Step 1: Calculate initial and target phases
+    const initialDLMO = estimateInitialDLMO(habitualSleep, originTz, departureMs);
+    const initialCBTmin = dlmoToCBTmin(initialDLMO);
+    const targetDLMO = calculateTargetDLMO(habitualSleep, destTz, arrivalMs);
+    const targetCBTmin = dlmoToCBTmin(targetDLMO);
+    
+    // Step 2: Determine shift direction and magnitude
+    const shift = calculateShift(initialDLMO, targetDLMO);
+    const { direction, magnitude } = shift;
+    
+    // For very small shifts (<0.5h), no adaptation needed
+    const needsAdaptation = magnitude >= 0.5;
+    
+    // Step 3: Calculate adaptation timeline
+    const dailyShiftRate = needsAdaptation ? getDailyShift(direction, true) : 0;
+    const adaptationDays = needsAdaptation ? Math.ceil(magnitude / dailyShiftRate) : 0;
+    
+    // Step 4: Build daily schedule
+    const schedule = [];
+    let currentDLMO = initialDLMO;
+    let currentCBTmin = initialCBTmin;
+    let remainingShift = magnitude;
+    
+    // Calculate key timestamps
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const flightDayIndex = preTripDays;
+    const totalDays = preTripDays + 1 + adaptationDays;
+    
+    for (let dayIndex = 0; dayIndex < totalDays; dayIndex++) {
+      const dayMs = departureMs - (preTripDays - dayIndex) * msPerDay;
       
-      // Require explicit timezones - no silent fallback
-      if (!flight.fromTz || !flight.toTz) {
-        const error = `Flight ${flight.id || flight.label}: Missing timezone information. ` +
-          `fromTz="${flight.fromTz || 'missing'}", toTz="${flight.toTz || 'missing'}". ` +
-          `Cannot generate circadian advice without airport timezones.`;
+      const isPreTrip = dayIndex < preTripDays;
+      const isFlightDay = dayIndex === flightDayIndex;
+      const isPostArrival = dayIndex > flightDayIndex;
+      
+      // Determine location and timezone for this day
+      const isInOrigin = dayIndex <= flightDayIndex;
+      const currentTz = isInOrigin ? originTz : destTz;
+      
+      // Calculate sleep window (tracks current phase)
+      const sleepStartUtc = normalizeHours(currentDLMO + 2);
+      const sleepEndUtc = normalizeHours(currentDLMO + 10);
+      const sleepStartLocal = utcToLocal(sleepStartUtc, currentTz, dayMs);
+      const sleepEndLocal = utcToLocal(sleepEndUtc, currentTz, dayMs);
+      
+      // Calculate light windows
+      const lightWindows = calculateLightWindows(currentCBTmin, direction);
+      const lightAdvice = formatLightAdvice(
+        lightWindows,
+        sleepStartLocal,
+        sleepEndLocal,
+        currentTz,
+        dayMs
+      );
+      
+      // Calculate melatonin advice
+      const melatoninAdvice = calculateMelatoninAdvice(currentDLMO, direction, currentTz, dayMs);
+      
+      // Format phase markers in local time for display
+      const dlmoLocal = utcToLocal(currentDLMO, currentTz, dayMs);
+      const cbtminLocal = utcToLocal(currentCBTmin, currentTz, dayMs);
+      
+      // Build day entry
+      const dayEntry = {
+        dayIndex,
+        dayMs,
+        phase: isPreTrip ? 'pre-trip' : isFlightDay ? 'travel' : 'post-arrival',
+        location: isInOrigin ? origin.name : destination.name,
+        timezone: currentTz,
         
-        if (onError) {
-          onError(flight, error);
-        } else {
-          console.error(error);
-        }
+        // Phase markers (UTC for calculation, local for display)
+        dlmoUtc: currentDLMO,
+        cbtminUtc: currentCBTmin,
+        dlmoLocal,
+        cbtminLocal,
+        dlmoLocalStr: formatHour(dlmoLocal),
+        cbtminLocalStr: formatHour(cbtminLocal),
         
-        recommendations[flight.id] = {
-          error,
-          plan: null,
-          advice: null,
-        };
-        continue;
-      }
-      
-      // Calculate body clock at departure
-      const bodyClock = calculateBodyClock(zoneHistory, dep);
-      
-      // Context: estimate sleep debt (placeholder - would need more data)
-      const context = {
-        sleepDebt: 0,
-        lastSleepHours: 7,
+        // Sleep window
+        sleepStartLocal,
+        sleepEndLocal,
+        sleepWindow: `${formatHour(sleepStartLocal)}–${formatHour(sleepEndLocal)} ${currentTz}`,
+        
+        // Light advice
+        lightSeek: lightAdvice.seek,
+        lightAvoid: lightAdvice.avoid,
+        
+        // Melatonin advice
+        melatonin: melatoninAdvice,
+        
+        // Shift tracking
+        remainingShift,
+        shiftThisDay: 0
       };
       
-      const plan = generateFlightPlan({
-        dep,
-        arr,
-        fromTz: flight.fromTz,
-        toTz: flight.toTz,
-        durationHours,
-      }, bodyClock, context);
+      schedule.push(dayEntry);
       
-      const advice = formatFlightAdvice(plan, flight);
+      // Apply daily shift for next day (only if adaptation is needed)
+      if (needsAdaptation && remainingShift > 0) {
+        const shiftAmount = Math.min(dailyShiftRate, remainingShift);
+        
+        // Determine which direction to shift in UTC
+        // To move from initial toward target, calculate the direction
+        const needsToGoLater = targetDLMO > currentDLMO || 
+                               (targetDLMO < currentDLMO && (currentDLMO - targetDLMO) > 12);
+        
+        if (needsToGoLater) {
+          // Shift DLMO later (add)
+          currentDLMO = normalizeHours(currentDLMO + shiftAmount);
+          currentCBTmin = normalizeHours(currentCBTmin + shiftAmount);
+        } else {
+          // Shift DLMO earlier (subtract)
+          currentDLMO = normalizeHours(currentDLMO - shiftAmount);
+          currentCBTmin = normalizeHours(currentCBTmin - shiftAmount);
+        }
+        
+        remainingShift -= shiftAmount;
+        dayEntry.shiftThisDay = shiftAmount;
+        
+        // Clamp to target (never overshoot)
+        const distToTarget = circularDistance(currentDLMO, targetDLMO);
+        if (distToTarget < 0.01 || remainingShift < 0.01) {
+          currentDLMO = targetDLMO;
+          currentCBTmin = targetCBTmin;
+          remainingShift = 0;
+        }
+      }
+    }
+    
+    // Step 5: Generate in-flight recommendations
+    const boardingDayIndex = Math.max(0, flightDayIndex - 1);
+    const boardingDay = schedule[boardingDayIndex];
+    const boardingDLMO = boardingDay.dlmoUtc;
+    
+    const boardingHourOrigin = getLocalHour(departureMs, originTz);
+    const boardingHourUtc = localToUtc(boardingHourOrigin, originTz, departureMs);
+    
+    const inFlightAdvice = generateInFlightMelatonin(
+      departureMs,
+      arrivalMs,
+      boardingHourUtc,
+      boardingDLMO,
+      direction,
+      magnitude
+    );
+    
+    return {
+      // Trip overview
+      origin,
+      destination,
+      departureMs,
+      arrivalMs,
+      habitualSleep,
       
-      recommendations[flight.id] = {
-        plan,
-        advice,
-        error: null,
+      // Shift analysis
+      shift,
+      direction,
+      magnitude,
+      initialDLMO,
+      initialCBTmin,
+      targetDLMO,
+      targetCBTmin,
+      
+      // Timeline
+      preTripDays,
+      adaptationDays,
+      totalDays,
+      
+      // Daily schedule
+      schedule,
+      
+      // In-flight
+      inFlight: inFlightAdvice
+    };
+  }
+
+  /**
+   * Generate in-flight melatonin recommendation
+   */
+  function generateInFlightMelatonin(depMs, arrMs, boardingHourUtc, boardingDLMO, direction, magnitude) {
+    // Don't recommend for small shifts
+    if (magnitude <= 2) {
+      return {
+        recommended: false,
+        reason: `Shift too small (${magnitude.toFixed(1)}h) - no melatonin needed`
       };
     }
     
-    return recommendations;
+    // Only for advances (delays use morning light)
+    if (direction !== 'advance') {
+      return {
+        recommended: false,
+        reason: 'Morning light more effective for delays'
+      };
+    }
+    
+    // Check if boarding time is in PRC window
+    const inPRCWindow = isInMelatoninWindow(boardingHourUtc, boardingDLMO);
+    
+    if (!inPRCWindow) {
+      const hoursBefore = normalizeHours(boardingDLMO - boardingHourUtc);
+      return {
+        recommended: false,
+        reason: `Boarding time ${hoursBefore.toFixed(1)}h before DLMO - outside PRC advance window (1.5-4.5h before DLMO)`
+      };
+    }
+    
+    // Check if during sleep window (for sleep dose consideration)
+    const inSleep = isInSleepWindow(boardingHourUtc, boardingDLMO);
+    const dose = inSleep ? '3 mg' : '0.5 mg';
+    const purpose = inSleep ? 'sleep + phase-shift' : 'phase-shift';
+    
+    return {
+      recommended: true,
+      dose,
+      purpose,
+      reason: `Boarding time within PRC advance window (${normalizeHours(boardingDLMO - boardingHourUtc).toFixed(1)}h before DLMO)`
+    };
   }
 
-  // Export to window
-  window.CircadianAlgorithm = {
-    calculateBodyClock,
+  // ============================================================================
+  // STORAGE
+  // ============================================================================
+
+  function getHabitualSleep() {
+    if (typeof localStorage === 'undefined') {
+      return { sleepHour: 23, wakeHour: 7 };
+    }
+    const stored = localStorage.getItem('jetlag-habitual-sleep');
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch (e) {
+        console.warn('Invalid stored habitual sleep');
+      }
+    }
+    return { sleepHour: 23, wakeHour: 7 };
+  }
+
+  function setHabitualSleep(habitualSleep) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('jetlag-habitual-sleep', JSON.stringify(habitualSleep));
+    }
+  }
+
+  // ============================================================================
+  // EXPORTS
+  // ============================================================================
+
+  const API = {
+    // Main API
+    generateTripPlan,
+    
+    // Settings
+    getHabitualSleep,
+    setHabitualSleep,
+    
+    // Utilities (for testing)
+    estimateInitialDLMO,
+    dlmoToCBTmin,
+    calculateTargetDLMO,
     calculateShift,
+    calculateLightWindows,
+    calculateMelatoninAdvice,
+    getDailyShift,
+    normalizeHours,
+    circularDistance,
+    utcToLocal,
+    localToUtc,
+    formatHour,
+    getTimeOfDayLabel,
     getLocalHour,
-    isNightTime,
-    generateFlightPlan,
-    formatFlightAdvice,
-    generateTripRecommendations,
-    buildZoneHistory,
+    getTzOffsetHours,
+    
+    // Constants (for testing)
+    CBTMIN_OFFSET_FROM_DLMO,
+    DLMO_OFFSET_FROM_SLEEP,
+    MAX_ADVANCE_RATE,
+    MIN_ADVANCE_RATE,
+    MAX_DELAY_RATE,
+    MIN_DELAY_RATE,
+    MELATONIN_ADVANCE_PEAK,
+    MELATONIN_ADVANCE_WINDOW,
+    ANTIDROMIC_THRESHOLD
   };
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = API;
+  } else if (typeof window !== 'undefined') {
+    window.CircadianAlgorithm = API;
+  } else {
+    global.CircadianAlgorithm = API;
+  }
 
 })();

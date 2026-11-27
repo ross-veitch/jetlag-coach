@@ -49,7 +49,7 @@ window.JETLAG_DATA = {
       from: "MIA",
       to: "DXB",
       detail:
-        "Depart near midnight Miami. Sleep the first ~7 h (1 mg melatonin pre-board). Wake for Dubai evening arrival; dim light; bed ~00:30 GST.",
+        "Algorithm-generated advice will appear here.",
       dep: "2026-11-20T23:55:00-05:00",
       arr: "2026-11-21T23:00:00+04:00",
     },
@@ -344,8 +344,8 @@ window.JETLAG_DATA = {
           off: 13,
           cbt: "~16:00 SGT / ~03:00 EST",
           focus: "Wrap conference; overnight flight — begin advance to Dubai",
-          mel: "1 mg ~21:00 for plane sleep",
-          tip: "EK214 23:55 EST: sleep soon after takeoff. Arrive DXB 23:00 Sat GST.",
+          mel: "Algorithm-generated",
+          tip: "EK214 23:55 EST. See flight plan for in-flight advice. Arrive DXB 23:00 Sat GST.",
           blocks: [
             { t: "seek", a: 8.0, b: 11.0 },
             { t: "caff", a: 7.0, b: 14.0 },
@@ -354,7 +354,6 @@ window.JETLAG_DATA = {
             { t: "meal", a: 8.0, b: 8.5 },
             { t: "meal", a: 12.5, b: 13.25 },
             { t: "meal", a: 19.0, b: 20.0 },
-            { t: "mel", a: 21.0, b: 21.2 },
             { t: "flight", a: 23.92, b: 24.0 },
           ],
         },
