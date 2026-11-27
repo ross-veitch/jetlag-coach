@@ -15,7 +15,7 @@
 // Set up for Node.js
 if (typeof window === 'undefined') {
   global.window = {};
-  eval(require('fs').readFileSync('./js/circadian-algorithm-v2.js', 'utf8'));
+  eval(require('fs').readFileSync('./js/circadian-algorithm.js', 'utf8'));
 }
 
 const algo = window.CircadianAlgorithm;
@@ -617,6 +617,78 @@ console.log(`\nProperty test results: ${propertyTestsPassed}/${propertyTestsTota
 tests.total += propertyTestsTotal;
 tests.passed += propertyTestsPassed;
 tests.failed += propertyTestsFailed;
+
+console.log('\n--- Post-Arrival and Pre-Trip Melatonin Tests ---\n');
+
+// Verify that post-arrival and pre-trip melatonin ARE generated for advances
+const lhrSinTrip = algo.generateTripPlan(
+  {
+    fromTz: 'Europe/London',
+    toTz: 'Asia/Singapore',
+    depMs: Date.parse('2026-11-15T22:00:00+00:00'),
+    arrMs: Date.parse('2026-11-16T17:00:00+08:00')
+  },
+  habitualSleep, 2, 5
+);
+
+assert(
+  lhrSinTrip.recommendedDirection === 'advance',
+  'LHR→SIN: Direction is advance',
+  'advance',
+  lhrSinTrip.recommendedDirection,
+  '8h eastbound advance'
+);
+
+assert(
+  lhrSinTrip.dailyPlan[1].melatoninTiming.shouldTake === true,
+  'LHR→SIN: Pre-trip melatonin recommended',
+  'true (day -1)',
+  `${lhrSinTrip.dailyPlan[1].melatoninTiming.shouldTake}`,
+  'Eastbound advances get pre-trip melatonin 5-7h before DLMO (Burgess et al. 2010)'
+);
+
+assert(
+  lhrSinTrip.dailyPlan[3].melatoninTiming.shouldTake === true,
+  'LHR→SIN: Post-arrival melatonin recommended',
+  'true (day +1)',
+  `${lhrSinTrip.dailyPlan[3].melatoninTiming.shouldTake}`,
+  'Eastbound advances get post-arrival melatonin for phase advance (Burgess et al. 2010)'
+);
+
+// Verify delays do NOT get melatonin (use morning light instead)
+const sinLhrTrip = algo.generateTripPlan(
+  {
+    fromTz: 'Asia/Singapore',
+    toTz: 'Europe/London',
+    depMs: Date.parse('2026-11-15T23:00:00+08:00'),
+    arrMs: Date.parse('2026-11-16T06:00:00+00:00')
+  },
+  habitualSleep, 2, 5
+);
+
+assert(
+  sinLhrTrip.recommendedDirection === 'delay',
+  'SIN→LHR: Direction is delay',
+  'delay',
+  sinLhrTrip.recommendedDirection,
+  '8h westbound delay'
+);
+
+assert(
+  sinLhrTrip.dailyPlan[1].melatoninTiming.shouldTake === false,
+  'SIN→LHR: NO pre-trip melatonin',
+  'false',
+  `${sinLhrTrip.dailyPlan[1].melatoninTiming.shouldTake}`,
+  'Westbound delays use morning light, not melatonin (Eastman & Burgess 2009)'
+);
+
+assert(
+  sinLhrTrip.dailyPlan[3].melatoninTiming.shouldTake === false,
+  'SIN→LHR: NO post-arrival melatonin',
+  'false',
+  `${sinLhrTrip.dailyPlan[3].melatoninTiming.shouldTake}`,
+  'Delays use morning light after CBTmin, not melatonin'
+);
 
 console.log('\n=== Validation Summary ===\n');
 console.log(`Total tests: ${tests.total}`);

@@ -1,0 +1,28 @@
+{
+  "name": "jetlag-coach",
+  "version": "1.0.0",
+  "description": "Installable Progressive Web App for Ross Veitch’s Nov 2026 jet-lag plan (Singapore → Dubai → Miami → Dubai → Singapore). Static HTML/CSS/JS — no build step.",
+  "main": "sw.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ross-veitch/jetlag-coach.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ross-veitch/jetlag-coach/issues"
+  },
+  "homepage": "https://github.com/ross-veitch/jetlag-coach#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "playwright": "^1.65.1"
+  }
+}
