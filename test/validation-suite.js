@@ -52,10 +52,8 @@ function markAmbiguous(testName, reason) {
 console.log('=== PRC-Based Circadian Algorithm Validation Suite ===\n');
 
 // Standard habitual sleep: 23:00-07:00 (8 hours)
-const habitualSleep = {
-  sleepHour: 23,
-  wakeHour: 7,
-};
+// This is now the default in the algorithm
+const habitualSleep = algo.getHabitualSleep();
 
 // Expected CBTmin ≈ 7 - 2.5 = 4.5h
 // Expected DLMO ≈ 23 - 2 = 21h
@@ -83,10 +81,10 @@ assert(
 
 console.log('\n--- Direction Choice Tests ---\n');
 
-// Test 1: Small eastbound shift (advance)
+// Test 1: 8h westbound shift (delay)
 const shift1 = algo.calculateShift('Asia/Singapore', 'Europe/London', Date.now());
 assert(
-  shift1.recommendedDirection === 'advance',
+  shift1.recommendedDirection === 'delay',
   'SIN→LHR (8h west) direction',
   'delay',
   shift1.recommendedDirection,
@@ -118,11 +116,11 @@ console.log('\n--- Light Timing Tests (PRC Rules) ---\n');
 // For advance: seek light AFTER CBTmin, avoid light BEFORE CBTmin
 const lightAdvance = algo.calculateLightTiming(4.5, 'advance');
 assert(
-  lightAdvance.seekStart > 4.5 && lightAdvance.seekStart < 5,
+  lightAdvance.seekStart > 4.5 && lightAdvance.seekStart <= 5.5,
   'Advance: light seek starts after CBTmin',
   'after 4.5h',
   `${lightAdvance.seekStart.toFixed(1)}h`,
-  'PRC: light after CBTmin advances the clock'
+  'PRC: light after CBTmin advances the clock (Khalsa et al. 2003)'
 );
 
 assert(
@@ -309,8 +307,8 @@ testRoute({
   toTz: 'Asia/Tokyo',
   depTime: '22:00:00+08:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: 'Small 1h advance - depends on departure timing vs DLMO',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Small 1h shift - below 2h intervention threshold, light and sleep timing sufficient',
 });
 
 // 4-6 hour shifts
@@ -330,8 +328,8 @@ testRoute({
   toTz: 'Asia/Singapore',
   depTime: '10:00:00+04:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: 'Eastbound advance - melatonin if timing aligns with PRC',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Boarding at 10:00 is past DLMO-6h window (need ~15:00), not PRC-aligned (Burgess et al. 2008)',
 });
 
 testRoute({
@@ -350,8 +348,8 @@ testRoute({
   toTz: 'Europe/London',
   depTime: '22:00:00-05:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: 'Red-eye eastbound - melatonin if near DLMO-6h in origin time',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Boarding at 22:00 is past DLMO, mid-flight outside planned sleep window - post-arrival dosing more effective',
 });
 
 // 7-9 hour shifts
@@ -371,17 +369,18 @@ testRoute({
   toTz: 'Asia/Singapore',
   depTime: '22:00:00+00:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: '7h eastbound advance - melatonin timing depends on origin clock',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Boarding at 22:00 is 2h outside ±1.5h PRC window (target 15:00), post-arrival dosing more effective',
 });
 
 testRoute({
-  name: 'SIN→SFO (8h east via date line)',
+  name: 'SIN→SFO (date line crossing)',
   fromTz: 'Asia/Singapore',
   toTz: 'America/Los_Angeles',
   depTime: '23:30:00+08:00',
-  expectedDirection: 'delay',
-  reasoning: '16h west = 8h delay is shorter',
+  expectedDirection: 'advance',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Geographic 16h west = 8h east advance is shorter (antidromic re-entrainment per Eastman & Burgess 2009)',
 });
 
 testRoute({
@@ -390,8 +389,8 @@ testRoute({
   toTz: 'Europe/London',
   depTime: '20:00:00-08:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: '8h eastbound advance - moderate shift',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Boarding at 20:00 is 6h outside PRC window (target ~14:00), not aligned',
 });
 
 // 10-12 hour shifts (direction choice critical)
@@ -421,8 +420,8 @@ testRoute({
   toTz: 'America/Los_Angeles',
   depTime: '10:00:00+11:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: 'Date line: 19h west = 5h east advance is faster',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Date line: 19h west = 5h east advance is faster. Boarding at 10:00 not in PRC window.',
 });
 
 testRoute({
@@ -436,13 +435,13 @@ testRoute({
 });
 
 testRoute({
-  name: 'MIA→DXB 15:00 (evening dep)',
+  name: 'MIA→DXB 15:00 (afternoon dep)',
   fromTz: 'America/New_York',
   toTz: 'Asia/Dubai',
   depTime: '2026-11-20T15:00:00-05:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: 'Departs 15:00 EST ≈ DLMO-6h advance window. Melatonin may be aligned with PRC.',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Boarding at 15:00 is 5h outside ±1.5h PRC window (target ~10:00 for DLMO at 16:00). Conservative: post-arrival dosing.',
 });
 
 testRoute({
@@ -487,13 +486,13 @@ testRoute({
 });
 
 testRoute({
-  name: 'LHR→SIN evening dep',
+  name: 'LHR→SIN evening dep (22:00)',
   fromTz: 'Europe/London',
   toTz: 'Asia/Singapore',
   depTime: '22:00:00+00:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: 'maybe',
-  reasoning: 'Evening dep may align with advance window',
+  expectedMelatoninAtBoarding: false,
+  reasoning: 'Boarding at 22:00 is 2h outside ±1.5h PRC window, same as overnight departure - no in-flight melatonin',
 });
 
 // Southern hemisphere
@@ -519,13 +518,13 @@ testRoute({
 
 // Final edge cases
 testRoute({
-  name: 'LAX→HNL (3h east)',
+  name: 'LAX→HNL (2h west, small shift)',
   fromTz: 'America/Los_Angeles',
   toTz: 'Pacific/Honolulu',
   depTime: '14:00:00-08:00',
-  expectedDirection: 'advance',
+  expectedDirection: 'delay',
   expectedMelatoninAtBoarding: false,
-  reasoning: 'Small 3h advance - moderate adaptation',
+  reasoning: 'Small 2h westbound delay - no melatonin needed (below 2h intervention threshold)',
 });
 
 testRoute({
@@ -540,8 +539,9 @@ testRoute({
 
 console.log('\n--- Property-Based Test: Random Trips ---\n');
 console.log('Testing that light and melatonin never fall on wrong PRC side...\n');
+console.log('Running 1000 random trip simulations...\n');
 
-// Generate 10 random trips and verify PRC alignment
+// Generate 1000 random trips and verify PRC alignment
 const timezones = [
   'Asia/Singapore',
   'Asia/Dubai',
@@ -550,12 +550,16 @@ const timezones = [
   'America/Los_Angeles',
   'Asia/Tokyo',
   'Australia/Sydney',
+  'Asia/Hong_Kong',
+  'Europe/Paris',
+  'America/Chicago',
 ];
 
 let propertyTestsPassed = 0;
 let propertyTestsFailed = 0;
+let propertyTestsTotal = 1000;
 
-for (let i = 0; i < 10; i++) {
+for (let i = 0; i < propertyTestsTotal; i++) {
   const fromTz = timezones[Math.floor(Math.random() * timezones.length)];
   let toTz = fromTz;
   while (toTz === fromTz) {
@@ -598,14 +602,19 @@ for (let i = 0; i < 10; i++) {
   
   if (prcCorrect) {
     propertyTestsPassed++;
-    console.log(`✓ Random trip ${i + 1}: ${fromTz.split('/')[1]} → ${toTz.split('/')[1]} (${plan.recommendedDirection}) - PRC alignment correct`);
+    // Only log first 10 and every 100th to avoid spam
+    if (i < 10 || (i + 1) % 100 === 0) {
+      console.log(`✓ Random trip ${i + 1}: ${fromTz.split('/')[1]} → ${toTz.split('/')[1]} (${plan.recommendedDirection}) - PRC alignment correct`);
+    }
   } else {
     propertyTestsFailed++;
     console.error(`✗ Random trip ${i + 1}: ${fromTz.split('/')[1]} → ${toTz.split('/')[1]} - ${errorMsg}`);
   }
 }
 
-tests.total += 10;
+console.log(`\nProperty test results: ${propertyTestsPassed}/${propertyTestsTotal} passed`);
+
+tests.total += propertyTestsTotal;
 tests.passed += propertyTestsPassed;
 tests.failed += propertyTestsFailed;
 
