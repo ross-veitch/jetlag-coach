@@ -160,29 +160,97 @@
     const isUltraLong = durationHours >= 14;
 
     // === MELATONIN LOGIC ===
-    // Never at destination morning/daytime when adapting
-    // Only near destination bedtime or when sleep is needed during dest night
+    // Direction-aware melatonin recommendations based on shift direction and destination night overlap
+    // Key principle: Only recommend melatonin when the traveler should be sleeping during 
+    // a meaningful portion of destination night. Never recommend when departing during 
+    // destination daytime or when destination night is ending.
     
-    if (depDestHour >= 6 && depDestHour <= 18) {
-      // Departing during destination day - NO melatonin at boarding
-      plan.melatonin.atBoarding = false;
-      plan.melatonin.reason = 'Departure is destination daytime - melatonin would shift the wrong direction';
-    } else if (depDestHour >= 20 || depDestHour <= 4) {
-      // Departing during destination evening/night
-      if (isOvernightFlight && durationHours >= 6) {
-        plan.melatonin.atBoarding = true;
-        plan.melatonin.dose = '0.5-1mg';
-        plan.melatonin.timing = '30-60 minutes before boarding';
-        plan.melatonin.reason = 'To help sleep during destination night';
+    // Calculate what portion of the flight overlaps with destination night
+    let destNightHours = 0;
+    let destNightStart = null;
+    let destNightEnd = null;
+    
+    // Sample the flight at 30-minute intervals to find destination night coverage
+    for (let h = 0; h <= durationHours; h += 0.5) {
+      const sampleMs = dep + h * 3600000;
+      const destHour = getLocalHour(sampleMs, toTz);
+      
+      if (destHour >= 22 || destHour < 6) {
+        destNightHours += 0.5;
+        if (destNightStart === null) {
+          destNightStart = h; // hours after departure
+        }
+        destNightEnd = h;
       }
     }
     
-    // Post-landing melatonin
-    plan.melatonin.onLanding = {
-      recommended: true,
-      timing: '30-60 min before destination bedtime (~22:30 local)',
-      dose: '0.5-1mg',
-    };
+    // Check if departure is during destination night (not just any night)
+    const isDepartingDestNight = depDestHour >= 22 || depDestHour <= 4;
+    // Check if arrival is during destination morning (ending night)
+    const isArrivingDestMorning = arrDestHour >= 5 && arrDestHour <= 9;
+    
+    plan.melatonin.atBoarding = false;
+    plan.melatonin.reason = '';
+    
+    // Rule 1: Never recommend melatonin if departing during destination daytime (6am-9pm)
+    if (depDestHour >= 6 && depDestHour < 21) {
+      plan.melatonin.atBoarding = false;
+      plan.melatonin.reason = `Departure at ${depDestHour.toFixed(1)}h destination time is daytime - melatonin would shift the wrong direction`;
+    }
+    // Rule 2: For eastbound (advance) or large westbound shifts, only recommend melatonin 
+    // if departing during destination evening/night AND the flight has substantial destination night overlap
+    else if (isDepartingDestNight && destNightHours >= 4 && durationHours >= 6) {
+      // Departing during destination night with ≥4h of destination night coverage
+      // This is appropriate for sleep consolidation during destination night
+      plan.melatonin.atBoarding = true;
+      plan.melatonin.dose = '0.5-1mg';
+      plan.melatonin.timing = '30-60 minutes before boarding';
+      plan.melatonin.reason = `Flight has ${destNightHours.toFixed(1)}h of destination night - melatonin helps sleep during destination night`;
+    }
+    // Rule 3: If destination night is ending soon after departure (arriving in morning), 
+    // melatonin is less useful since you should be waking up
+    else if (isDepartingDestNight && isArrivingDestMorning && destNightHours < 4) {
+      plan.melatonin.atBoarding = false;
+      plan.melatonin.reason = `Destination night ending - only ${destNightHours.toFixed(1)}h coverage, better to wake naturally`;
+    }
+    // Rule 4: Short flights or insufficient destination night coverage
+    else if (destNightHours < 3 || durationHours < 5) {
+      plan.melatonin.atBoarding = false;
+      plan.melatonin.reason = destNightHours < 3 
+        ? `Only ${destNightHours.toFixed(1)}h of destination night - too brief for melatonin`
+        : 'Flight too short for boarding melatonin';
+    }
+    else {
+      plan.melatonin.atBoarding = false;
+      plan.melatonin.reason = 'Timing does not align with destination night sleep window';
+    }
+    
+    // Post-landing melatonin (direction-aware)
+    // For eastbound (advance): Low-dose melatonin in destination evening helps advance the clock
+    // For westbound (delay): Generally avoid melatonin; use morning light instead
+    // For large shifts: May need melatonin to consolidate sleep
+    
+    const isLargeShift = Math.abs(shift.hours) >= 6;
+    const isEastbound = shift.direction === 'east';
+    
+    if (isEastbound || isLargeShift) {
+      plan.melatonin.onLanding = {
+        recommended: true,
+        timing: '30-60 min before destination bedtime (~22:00-22:30 local)',
+        dose: '0.5mg for phase advance, 1mg for sleep consolidation',
+        reason: isEastbound 
+          ? 'Eastbound - melatonin in destination evening helps advance circadian rhythm'
+          : 'Large shift - melatonin helps consolidate sleep at destination time',
+      };
+    } else {
+      // Westbound delay - morning light is more effective
+      plan.melatonin.onLanding = {
+        recommended: false,
+        timing: 'Not needed - use morning light instead',
+        dose: null,
+        reason: 'Westbound - morning light at destination is more effective than melatonin',
+      };
+    }
 
     // === SLEEP WINDOWS LOGIC ===
     
@@ -418,8 +486,10 @@
     // On landing
     parts.push(`On landing: ${plan.light.onLanding}.`);
     
-    if (plan.melatonin.onLanding.recommended) {
+    if (plan.melatonin.onLanding && plan.melatonin.onLanding.recommended) {
       parts.push(`Take ${plan.melatonin.onLanding.dose} melatonin ${plan.melatonin.onLanding.timing}.`);
+    } else if (plan.melatonin.onLanding && !plan.melatonin.onLanding.recommended) {
+      parts.push(`Melatonin not needed on landing - use light exposure instead.`);
     }
     
     return parts.join(' ');
