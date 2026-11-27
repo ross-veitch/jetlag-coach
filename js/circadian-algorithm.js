@@ -1,84 +1,66 @@
 /**
- * Circadian Algorithm v2 - PRC-Based Jet Lag Recommendations
+ * Circadian Algorithm v3 - Clean PRC-Based Implementation
  * 
- * Based on scientific literature:
- * - Khalsa et al. 2003 (light PRC)
- * - Burgess et al. 2008, 2010 (melatonin PRC, 0.5mg vs 3mg)
- * - Eastman & Burgess 2009 (jet lag strategies)
- * - Waterhouse et al. 2007 (Lancet review)
+ * Complete rewrite based on scientific specification:
+ * - Single phase state: DLMO in UTC, CBTmin = DLMO + 7.5h
+ * - Target: habitual sleep phase in destination local time
+ * - Daily simulation with proper intervention logic
+ * - Display in traveler's physical timezone each day
  * 
- * See docs/SCIENCE.md for detailed references and methodology.
+ * References:
+ * - Khalsa et al. 2003: Light PRC
+ * - Burgess et al. 2010: Melatonin PRC (0.5mg dosing)
+ * - Eastman & Burgess 2009: Pre-flight adaptation protocols
  */
 
 (function() {
   'use strict';
 
+  // ============================================================================
+  // CONSTANTS
+  // ============================================================================
+
+  const CBTMIN_OFFSET_FROM_DLMO = 7.5; // hours
+  const DLMO_OFFSET_FROM_SLEEP = 2.0;  // hours before bedtime
+  
+  // Shift rate caps (hours per day)
+  const MAX_ADVANCE_RATE = 1.5;
+  const MIN_ADVANCE_RATE = 1.0;
+  const MAX_DELAY_RATE = 2.0;
+  const MIN_DELAY_RATE = 1.5;
+  
+  // PRC windows (Burgess 2010 for 0.5mg melatonin)
+  const MELATONIN_ADVANCE_PEAK = 3.0;  // hours before DLMO
+  const MELATONIN_ADVANCE_WINDOW = 1.5; // tolerance ±1.5h (1.5-4.5h before DLMO)
+  
+  // Antidromic threshold (prefer opposite direction for shifts > 9h)
+  const ANTIDROMIC_THRESHOLD = 9.0;
+
+  // ============================================================================
+  // UTILITY FUNCTIONS
+  // ============================================================================
+
   /**
-   * Get habitual sleep settings from localStorage or defaults
-   * @returns {Object} {sleepHour, wakeHour} in decimal hours (0-24)
+   * Normalize hours to 0-24 range
    */
-  function getHabitualSleep() {
-    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('jetlag-habitual-sleep') : null;
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch (e) {
-        console.warn('Invalid stored habitual sleep, using defaults');
-      }
-    }
-    // Default: 23:00-07:00 (8 hours)
-    return { sleepHour: 23, wakeHour: 7 };
+  function normalizeHours(h) {
+    while (h < 0) h += 24;
+    while (h >= 24) h -= 24;
+    return h;
   }
 
   /**
-   * Save habitual sleep settings to localStorage
-   * @param {Object} habitualSleep - {sleepHour, wakeHour}
+   * Calculate circular distance between two hours (0-24)
    */
-  function setHabitualSleep(habitualSleep) {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('jetlag-habitual-sleep', JSON.stringify(habitualSleep));
-    }
+  function circularDistance(a, b) {
+    const diff = Math.abs(a - b);
+    return Math.min(diff, 24 - diff);
   }
 
   /**
-   * Estimate CBTmin (Core Body Temperature Minimum) from habitual sleep schedule
-   * CBTmin occurs approximately 2-3 hours before habitual wake time
-   * 
-   * @param {Object} habitualSleep - {sleepHour, wakeHour} in decimal hours (0-24)
-   * @returns {number} CBTmin hour in origin timezone (0-24)
-   * 
-   * Reference: Khalsa et al. 2003
+   * Get timezone offset in hours for a given timestamp
    */
-  function estimateCBTmin(habitualSleep) {
-    const { wakeHour } = habitualSleep;
-    // CBTmin ≈ 2.5 hours before habitual wake
-    let cbtmin = wakeHour - 2.5;
-    if (cbtmin < 0) cbtmin += 24;
-    return cbtmin;
-  }
-
-  /**
-   * Estimate DLMO (Dim Light Melatonin Onset) from habitual sleep schedule
-   * DLMO occurs approximately 2 hours before habitual bedtime
-   * Typically about 14 hours after CBTmin in normal entrainment
-   * 
-   * @param {Object} habitualSleep - {sleepHour, wakeHour}
-   * @returns {number} DLMO hour in origin timezone (0-24)
-   * 
-   * Reference: Burgess et al. 2010
-   */
-  function estimateDLMO(habitualSleep) {
-    const { sleepHour } = habitualSleep;
-    // DLMO ≈ 2 hours before habitual sleep
-    let dlmo = sleepHour - 2;
-    if (dlmo < 0) dlmo += 24;
-    return dlmo;
-  }
-
-  /**
-   * Calculate timezone offset in hours
-   */
-  function getTimezoneOffset(tz, ms) {
+  function getTzOffsetHours(tz, ms) {
     const date = new Date(ms);
     const utcDate = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
     const tzDate = new Date(date.toLocaleString('en-US', { timeZone: tz }));
@@ -86,7 +68,7 @@
   }
 
   /**
-   * Get local hour in a timezone (0-23.99)
+   * Get local wall-clock hour (0-23.99) in a timezone at a given timestamp
    */
   function getLocalHour(ms, tz) {
     const f = new Intl.DateTimeFormat('en-GB', {
@@ -96,457 +78,616 @@
       hour12: false,
     });
     const parts = Object.fromEntries(f.formatToParts(new Date(ms)).map(p => [p.type, p.value]));
-    const hour = parseInt(parts.hour, 10);
-    const minute = parseInt(parts.minute, 10);
-    return hour + minute / 60;
+    return parseInt(parts.hour) + parseInt(parts.minute) / 60;
   }
+
+  /**
+   * Format hour (0-24) as HH:MM string
+   */
+  function formatHour(h) {
+    const hour = Math.floor(h);
+    const min = Math.round((h - hour) * 60);
+    return `${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`;
+  }
+
+  /**
+   * Get time-of-day label from local hour
+   */
+  function getTimeOfDayLabel(h) {
+    if (h >= 5 && h < 12) return 'morning';
+    if (h >= 12 && h < 17) return 'afternoon';
+    if (h >= 17 && h < 21) return 'evening';
+    return 'night';
+  }
+
+  /**
+   * Convert UTC hour to local hour in a timezone at a given day
+   */
+  function utcToLocal(utcHour, tz, dayMs) {
+    // Create a date at the UTC hour on the given day
+    const date = new Date(dayMs);
+    const hours = Math.floor(utcHour);
+    const minutes = Math.round((utcHour - hours) * 60);
+    date.setUTCHours(hours, minutes, 0, 0);
+    return getLocalHour(date.getTime(), tz);
+  }
+
+  /**
+   * Convert local hour in a timezone to UTC hour
+   */
+  function localToUtc(localHour, tz, dayMs) {
+    const tzOffset = getTzOffsetHours(tz, dayMs);
+    return normalizeHours(localHour - tzOffset);
+  }
+
+  // ============================================================================
+  // PHASE ESTIMATION
+  // ============================================================================
+
+  /**
+   * Estimate initial DLMO from habitual sleep in origin timezone
+   * DLMO ≈ bedtime - 2h
+   */
+  function estimateInitialDLMO(habitualSleep, originTz, departureMs) {
+    const { sleepHour } = habitualSleep;
+    const dlmoLocal = normalizeHours(sleepHour - DLMO_OFFSET_FROM_SLEEP);
+    // Convert to UTC for internal calculations
+    return localToUtc(dlmoLocal, originTz, departureMs);
+  }
+
+  /**
+   * Calculate CBTmin from DLMO
+   * CBTmin = DLMO + 7.5h (invariant)
+   */
+  function dlmoToCBTmin(dlmo) {
+    return normalizeHours(dlmo + CBTMIN_OFFSET_FROM_DLMO);
+  }
+
+  /**
+   * Calculate target DLMO (habitual sleep phase in destination timezone)
+   */
+  function calculateTargetDLMO(habitualSleep, destTz, arrivalMs) {
+    const { sleepHour } = habitualSleep;
+    const targetLocal = normalizeHours(sleepHour - DLMO_OFFSET_FROM_SLEEP);
+    // Convert to UTC
+    return localToUtc(targetLocal, destTz, arrivalMs);
+  }
+
+  // ============================================================================
+  // SHIFT CALCULATION
+  // ============================================================================
 
   /**
    * Calculate shift direction and magnitude
-   * Implements direction choice for large shifts (>8-9 hours)
-   * 
-   * For eastbound shifts >9h, consider delaying instead (antidromic re-entrainment)
-   * For westbound shifts >9h, consider advancing instead
-   * 
-   * Reference: Eastman & Burgess 2009, Waterhouse et al. 2007
+   * Implements antidromic logic for large shifts (>9h)
    */
-  function calculateShift(fromTz, toTz, ms) {
-    const fromOffset = getTimezoneOffset(fromTz, ms);
-    const toOffset = getTimezoneOffset(toTz, ms);
-    const rawShift = toOffset - fromOffset;
+  function calculateShift(initialDLMO, targetDLMO) {
+    // Calculate circular distance
+    const circDist = circularDistance(initialDLMO, targetDLMO);
+    
+    // If already aligned (within 15 min), no shift needed
+    if (circDist < 0.25) {
+      return { direction: 'none', magnitude: 0, rawDiff: 0 };
+    }
+    
+    // Calculate raw difference in UTC
+    let rawDiff = targetDLMO - initialDLMO;
     
     // Normalize to -12 to +12 range
-    let shift = rawShift;
-    if (shift > 12) shift -= 24;
-    if (shift < -12) shift += 24;
+    if (rawDiff > 12) rawDiff -= 24;
+    if (rawDiff < -12) rawDiff += 24;
     
-    // Direction choice: for shifts >8-9 hours, the other direction may be faster
-    let recommendedDirection = shift > 0 ? 'advance' : 'delay';
-    let recommendedMagnitude = Math.abs(shift);
+    // Determine optimal direction
+    // Advance means shifting earlier (subtracting from DLMO)
+    // Delay means shifting later (adding to DLMO)
     
-    // Eastbound (advance needed): if >9h, consider delaying 24-shift hours instead
-    if (shift > 9) {
-      const delayOption = 24 - shift;
-      if (delayOption < shift) {
-        recommendedDirection = 'delay';
-        recommendedMagnitude = delayOption;
+    let direction, magnitude;
+    
+    if (Math.abs(rawDiff) < 0.25) {
+      // Already aligned
+      direction = 'none';
+      magnitude = 0;
+    } else if (rawDiff > 0) {
+      // Target is later in UTC (higher number)
+      // Need to delay (shift later)
+      magnitude = rawDiff;
+      direction = 'delay';
+      
+      // Check antidromic: if delay > 9h, consider advancing instead
+      if (magnitude > ANTIDROMIC_THRESHOLD) {
+        const advanceOption = 24 - magnitude;
+        if (advanceOption < magnitude) {
+          direction = 'advance';
+          magnitude = advanceOption;
+        }
+      }
+    } else {
+      // Target is earlier in UTC (lower number)
+      // Need to advance (shift earlier)
+      magnitude = -rawDiff;
+      direction = 'advance';
+      
+      // Check antidromic: if advance > 9h, consider delaying instead
+      if (magnitude > ANTIDROMIC_THRESHOLD) {
+        const delayOption = 24 - magnitude;
+        if (delayOption < magnitude) {
+          direction = 'delay';
+          magnitude = delayOption;
+        }
       }
     }
     
-    // Westbound (delay needed): if >9h, consider advancing instead
-    if (shift < -9) {
-      const advanceOption = 24 + shift;
-      if (advanceOption < Math.abs(shift)) {
-        recommendedDirection = 'advance';
-        recommendedMagnitude = advanceOption;
+    return { direction, magnitude, rawDiff };
+  }
+
+  // ============================================================================
+  // LIGHT TIMING (Khalsa 2003 PRC)
+  // ============================================================================
+
+  /**
+   * Calculate light seek/avoid windows based on CBTmin and direction
+   * 
+   * Advance: seek light after CBTmin, avoid before
+   * Delay: seek light before CBTmin, avoid after
+   */
+  function calculateLightWindows(cbtmin, direction) {
+    if (direction === 'advance') {
+      // Seek: CBTmin + 0.5h to CBTmin + 4h
+      const seekStart = normalizeHours(cbtmin + 0.5);
+      const seekEnd = normalizeHours(cbtmin + 4);
+      // Avoid: CBTmin - 4h to CBTmin
+      const avoidStart = normalizeHours(cbtmin - 4);
+      const avoidEnd = cbtmin;
+      return { seekStart, seekEnd, avoidStart, avoidEnd };
+    } else {
+      // Delay: seek before CBTmin
+      // Seek: CBTmin - 6h to CBTmin - 3h (avoid dead zone)
+      const seekStart = normalizeHours(cbtmin - 6);
+      const seekEnd = normalizeHours(cbtmin - 3);
+      // Avoid: CBTmin to CBTmin + 4h
+      const avoidStart = cbtmin;
+      const avoidEnd = normalizeHours(cbtmin + 4);
+      return { seekStart, seekEnd, avoidStart, avoidEnd };
+    }
+  }
+
+  /**
+   * Clip light window to waking hours and format for display
+   */
+  function formatLightAdvice(windows, sleepStart, sleepEnd, localTz, dayMs) {
+    const { seekStart, seekEnd, avoidStart, avoidEnd } = windows;
+    
+    // Convert UTC hours to local for display
+    const seekStartLocal = utcToLocal(seekStart, localTz, dayMs);
+    const seekEndLocal = utcToLocal(seekEnd, localTz, dayMs);
+    const avoidStartLocal = utcToLocal(avoidStart, localTz, dayMs);
+    const avoidEndLocal = utcToLocal(avoidEnd, localTz, dayMs);
+    
+    // Check if windows overlap with sleep
+    const sleepStartNorm = normalizeHours(sleepStart);
+    const sleepEndNorm = normalizeHours(sleepEnd);
+    
+    function isAsleep(h) {
+      h = normalizeHours(h);
+      if (sleepStartNorm < sleepEndNorm) {
+        return h >= sleepStartNorm && h < sleepEndNorm;
+      } else {
+        return h >= sleepStartNorm || h < sleepEndNorm;
       }
     }
+    
+    function isAwake(h) {
+      return !isAsleep(h);
+    }
+    
+    // Format seek window
+    let seekText;
+    if (isAsleep(seekStartLocal) && isAsleep(seekEndLocal)) {
+      seekText = 'sleep';
+    } else if (isAsleep(seekStartLocal)) {
+      seekText = `on waking until ${formatHour(seekEndLocal)}`;
+    } else if (isAwake(seekStartLocal) && isAwake(seekEndLocal)) {
+      seekText = `${formatHour(seekStartLocal)}–${formatHour(seekEndLocal)}`;
+    } else {
+      seekText = `${formatHour(seekStartLocal)}–${formatHour(seekEndLocal)}`;
+    }
+    
+    // Format avoid window
+    let avoidText;
+    if (isAsleep(avoidStartLocal) && isAsleep(avoidEndLocal)) {
+      avoidText = 'sleep';
+    } else if (isAwake(avoidStartLocal) && isAwake(avoidEndLocal)) {
+      avoidText = `${formatHour(avoidStartLocal)}–${formatHour(avoidEndLocal)}`;
+    } else {
+      avoidText = `${formatHour(avoidStartLocal)}–${formatHour(avoidEndLocal)}`;
+    }
+    
+    return { seek: seekText, avoid: avoidText };
+  }
+
+  // ============================================================================
+  // MELATONIN TIMING (Burgess 2010)
+  // ============================================================================
+
+  /**
+   * Calculate melatonin timing for phase shift
+   * 
+   * Advance: 0.5mg at 3h before DLMO (window: 1.5-4.5h before)
+   * Delay: no melatonin by default (morning light more effective)
+   */
+  function calculateMelatoninAdvice(dlmo, direction, localTz, dayMs) {
+    if (direction !== 'advance') {
+      return { recommended: false, reason: 'Morning light more effective for delays' };
+    }
+    
+    // Phase-shift dose at peak advance window
+    const melUtc = normalizeHours(dlmo - MELATONIN_ADVANCE_PEAK);
+    const melLocal = utcToLocal(melUtc, localTz, dayMs);
+    const timeLabel = getTimeOfDayLabel(melLocal);
     
     return {
-      rawShift: shift,
-      direction: shift > 0 ? 'east' : shift < 0 ? 'west' : 'none',
-      recommendedDirection,
-      recommendedMagnitude,
-      hoursToShift: recommendedDirection === 'advance' ? recommendedMagnitude : -recommendedMagnitude,
+      recommended: true,
+      dose: '0.5 mg',
+      purpose: 'phase-shift',
+      timeUtc: melUtc,
+      timeLocal: melLocal,
+      timeStr: formatHour(melLocal),
+      timeLabel: timeLabel,
+      reason: `${formatHour(melLocal)} ${localTz} (${timeLabel}, 3h before DLMO)`
     };
   }
 
   /**
-   * Calculate light timing based on Phase Response Curve
-   * 
-   * PRC Rules (Khalsa et al. 2003):
-   * - Light AFTER CBTmin (morning/day) → Phase Advance (wake earlier)
-   * - Light BEFORE CBTmin (evening/night) → Phase Delay (wake later)
-   * - Dead zone: ~2h around CBTmin (weak/biphasic effect)
-   * 
-   * Daan & Lewy rule: Avoid light in the ~4h before CBTmin during adaptation
-   * 
-   * @param {number} currentCBTmin - Current CBTmin hour (0-24)
-   * @param {string} direction - 'advance' or 'delay'
-   * @returns {Object} - {seekStart, seekEnd, avoidStart, avoidEnd} in hours (0-24)
+   * Check if a time (in UTC) falls within melatonin PRC advance window
    */
-  function calculateLightTiming(currentCBTmin, direction) {
+  function isInMelatoninWindow(timeUtc, dlmoUtc) {
+    const hoursBefore = normalizeHours(dlmoUtc - timeUtc);
+    // Window: 1.5 to 4.5 hours before DLMO (3h ± 1.5h)
+    return hoursBefore >= (MELATONIN_ADVANCE_PEAK - MELATONIN_ADVANCE_WINDOW) &&
+           hoursBefore <= (MELATONIN_ADVANCE_PEAK + MELATONIN_ADVANCE_WINDOW);
+  }
+
+  /**
+   * Check if time falls within sleep window
+   */
+  function isInSleepWindow(timeUtc, dlmoUtc) {
+    const sleepStart = normalizeHours(dlmoUtc + 2); // Sleep ≈ DLMO + 2h
+    const sleepEnd = normalizeHours(dlmoUtc + 10);  // 8-hour sleep window
+    
+    const timeSinceSleep = normalizeHours(timeUtc - sleepStart);
+    return timeSinceSleep < 8;
+  }
+
+  // ============================================================================
+  // DAILY SIMULATION
+  // ============================================================================
+
+  /**
+   * Calculate shift amount for one day based on intervention
+   * 
+   * With intervention (light + melatonin for advances, light for delays):
+   *   Advances: 1.0-1.5 h/day
+   *   Delays: 1.5-2.0 h/day
+   * Without intervention: 0 (no shift)
+   */
+  function getDailyShift(direction, hasIntervention) {
+    if (!hasIntervention) return 0;
+    
     if (direction === 'advance') {
-      // Seek light AFTER CBTmin (advance zone)
-      // Start seeking from CBTmin + 0.5h, continue for 4-6 hours
-      const seekStart = (currentCBTmin + 0.5) % 24;
-      const seekEnd = (currentCBTmin + 6) % 24;
-      
-      // Avoid light BEFORE CBTmin (delay zone)
-      // Avoid 4h before CBTmin to prevent wrong-side effect
-      const avoidStart = (currentCBTmin - 4 + 24) % 24;
-      const avoidEnd = currentCBTmin;
-      
-      return { seekStart, seekEnd, avoidStart, avoidEnd };
+      return (MIN_ADVANCE_RATE + MAX_ADVANCE_RATE) / 2; // 1.25 h/day
     } else {
-      // Delay: seek light BEFORE CBTmin (delay zone)
-      // But not too close (dead zone), so use 3-6 hours before CBTmin
-      const seekStart = (currentCBTmin - 6 + 24) % 24;
-      const seekEnd = (currentCBTmin - 2 + 24) % 24;
-      
-      // Avoid light AFTER CBTmin (advance zone)
-      const avoidStart = currentCBTmin;
-      const avoidEnd = (currentCBTmin + 4) % 24;
-      
-      return { seekStart, seekEnd, avoidStart, avoidEnd };
+      return (MIN_DELAY_RATE + MAX_DELAY_RATE) / 2; // 1.75 h/day
     }
   }
 
   /**
-   * Calculate melatonin timing based on Phase Response Curve
-   * 
-   * PRC Rules (Burgess et al. 2008, 2010; Lewy et al. 1992):
-   * - Melatonin 5-7 hours before DLMO (afternoon/evening) → Phase Advance
-   * - Melatonin in morning (after CBTmin) → Phase Delay (rarely used)
-   * 
-   * Dosing (Burgess et al. 2010):
-   * - 0.5 mg: primarily chronobiotic (phase-shifting)
-   * - 1-3 mg: phase-shifting + mild hypnotic effect
-   * - 3+ mg: stronger hypnotic, marginally better phase shift
-   * 
-   * @param {number} currentDLMO - Current DLMO hour (0-24)
-   * @param {number} currentCBTmin - Current CBTmin hour (0-24)
-   * @param {string} direction - 'advance' or 'delay'
-   * @returns {Object} - {timing, dose, reasoning}
+   * Generate complete trip plan with day-by-day simulation
    */
-  function calculateMelatoninTiming(currentDLMO, currentCBTmin, direction) {
-    if (direction === 'advance') {
-      // DOSE-SPECIFIC PRC from Burgess et al. 2010:
-      // 0.5mg: Peak advance 2-4h before DLMO (late afternoon/early evening)
-      // 3.0mg: Peak advance ~5h before DLMO (mid-afternoon)
-      // For daily phase shifting, we use 0.5mg (pure chronobiotic, minimal hypnotic)
-      const timing = (currentDLMO - 3 + 24) % 24; // 0.5mg peak: 3h before DLMO
-      const dose = '0.5 mg';
-      
-      // Format time and determine time-of-day label
-      const hour = Math.floor(timing);
-      const minute = Math.round((timing - hour) * 60);
-      const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-      
-      let timeOfDay;
-      if (hour >= 12 && hour < 17) {
-        timeOfDay = 'afternoon';
-      } else if (hour >= 17 && hour < 20) {
-        timeOfDay = 'early evening';
-      } else if (hour >= 20) {
-        timeOfDay = 'evening';
-      } else {
-        timeOfDay = 'midday';
-      }
-      
-      const reasoning = `Take 0.5 mg at ${timeStr} (${timeOfDay}, 3h before DLMO at ${Math.floor(currentDLMO)}:00) for phase advance`;
-      
-      return { timing, dose, reasoning, shouldTake: true, purpose: 'phase-shift' };
-    } else {
-      // Delay: morning light is more effective than melatonin
-      return { 
-        timing: null, 
-        dose: null, 
-        reasoning: 'Morning light is more effective than melatonin for phase delays',
-        shouldTake: false,
-        purpose: null
-      };
-    }
-  }
-
-  /**
-   * Simulate circadian clock shift over days
-   * 
-   * Rate of adaptation (Eastman & Burgess 2009):
-   * - Advances: ~1-1.5 hours per day with optimally timed light + melatonin
-   * - Delays: ~1.5-2 hours per day with optimally timed light
-   * 
-   * @param {number} initialCBTmin - Starting CBTmin
-   * @param {string} direction - 'advance' or 'delay'
-   * @param {number} days - Number of days to simulate
-   * @param {boolean} hasLightAndMelatonin - Whether recommendations are followed
-   * @returns {Array} - Array of CBTmin values for each day
-   */
-  function simulateClockShift(initialCBTmin, direction, days, hasLightAndMelatonin = true) {
-    const cbtminByDay = [initialCBTmin];
+  function generateTripPlan(tripData, options = {}) {
+    const {
+      origin,
+      destination,
+      departureMs,
+      arrivalMs,
+      habitualSleep = { sleepHour: 23, wakeHour: 7 },
+      preTripDays = 2
+    } = tripData;
+    
+    const { timeZone: originTz } = origin;
+    const { timeZone: destTz } = destination;
+    
+    // Step 1: Calculate initial and target phases
+    const initialDLMO = estimateInitialDLMO(habitualSleep, originTz, departureMs);
+    const initialCBTmin = dlmoToCBTmin(initialDLMO);
+    const targetDLMO = calculateTargetDLMO(habitualSleep, destTz, arrivalMs);
+    const targetCBTmin = dlmoToCBTmin(targetDLMO);
+    
+    // Step 2: Determine shift direction and magnitude
+    const shift = calculateShift(initialDLMO, targetDLMO);
+    const { direction, magnitude } = shift;
+    
+    // For very small shifts (<0.5h), no adaptation needed
+    const needsAdaptation = magnitude >= 0.5;
+    
+    // Step 3: Calculate adaptation timeline
+    const dailyShiftRate = needsAdaptation ? getDailyShift(direction, true) : 0;
+    const adaptationDays = needsAdaptation ? Math.ceil(magnitude / dailyShiftRate) : 0;
+    
+    // Step 4: Build daily schedule
+    const schedule = [];
+    let currentDLMO = initialDLMO;
     let currentCBTmin = initialCBTmin;
+    let remainingShift = magnitude;
     
-    // Shift rate per day (hours)
-    const shiftRate = direction === 'advance' ? 
-      (hasLightAndMelatonin ? 1.25 : 0.75) :  // Advance: 1.25h/day with intervention
-      (hasLightAndMelatonin ? 1.75 : 1.0);     // Delay: 1.75h/day with intervention
+    // Calculate key timestamps
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const flightDayIndex = preTripDays;
+    const totalDays = preTripDays + 1 + adaptationDays;
     
-    for (let day = 1; day <= days; day++) {
-      if (direction === 'advance') {
-        currentCBTmin = (currentCBTmin - shiftRate + 24) % 24; // Advance = earlier = subtract
-      } else {
-        currentCBTmin = (currentCBTmin + shiftRate) % 24; // Delay = later = add
+    for (let dayIndex = 0; dayIndex < totalDays; dayIndex++) {
+      const dayMs = departureMs - (preTripDays - dayIndex) * msPerDay;
+      
+      const isPreTrip = dayIndex < preTripDays;
+      const isFlightDay = dayIndex === flightDayIndex;
+      const isPostArrival = dayIndex > flightDayIndex;
+      
+      // Determine location and timezone for this day
+      const isInOrigin = dayIndex <= flightDayIndex;
+      const currentTz = isInOrigin ? originTz : destTz;
+      
+      // Calculate sleep window (tracks current phase)
+      const sleepStartUtc = normalizeHours(currentDLMO + 2);
+      const sleepEndUtc = normalizeHours(currentDLMO + 10);
+      const sleepStartLocal = utcToLocal(sleepStartUtc, currentTz, dayMs);
+      const sleepEndLocal = utcToLocal(sleepEndUtc, currentTz, dayMs);
+      
+      // Calculate light windows
+      const lightWindows = calculateLightWindows(currentCBTmin, direction);
+      const lightAdvice = formatLightAdvice(
+        lightWindows,
+        sleepStartLocal,
+        sleepEndLocal,
+        currentTz,
+        dayMs
+      );
+      
+      // Calculate melatonin advice
+      const melatoninAdvice = calculateMelatoninAdvice(currentDLMO, direction, currentTz, dayMs);
+      
+      // Format phase markers in local time for display
+      const dlmoLocal = utcToLocal(currentDLMO, currentTz, dayMs);
+      const cbtminLocal = utcToLocal(currentCBTmin, currentTz, dayMs);
+      
+      // Build day entry
+      const dayEntry = {
+        dayIndex,
+        dayMs,
+        phase: isPreTrip ? 'pre-trip' : isFlightDay ? 'travel' : 'post-arrival',
+        location: isInOrigin ? origin.name : destination.name,
+        timezone: currentTz,
+        
+        // Phase markers (UTC for calculation, local for display)
+        dlmoUtc: currentDLMO,
+        cbtminUtc: currentCBTmin,
+        dlmoLocal,
+        cbtminLocal,
+        dlmoLocalStr: formatHour(dlmoLocal),
+        cbtminLocalStr: formatHour(cbtminLocal),
+        
+        // Sleep window
+        sleepStartLocal,
+        sleepEndLocal,
+        sleepWindow: `${formatHour(sleepStartLocal)}–${formatHour(sleepEndLocal)} ${currentTz}`,
+        
+        // Light advice
+        lightSeek: lightAdvice.seek,
+        lightAvoid: lightAdvice.avoid,
+        
+        // Melatonin advice
+        melatonin: melatoninAdvice,
+        
+        // Shift tracking
+        remainingShift,
+        shiftThisDay: 0
+      };
+      
+      schedule.push(dayEntry);
+      
+      // Apply daily shift for next day (only if adaptation is needed)
+      if (needsAdaptation && remainingShift > 0) {
+        const shiftAmount = Math.min(dailyShiftRate, remainingShift);
+        
+        // Determine which direction to shift in UTC
+        // To move from initial toward target, calculate the direction
+        const needsToGoLater = targetDLMO > currentDLMO || 
+                               (targetDLMO < currentDLMO && (currentDLMO - targetDLMO) > 12);
+        
+        if (needsToGoLater) {
+          // Shift DLMO later (add)
+          currentDLMO = normalizeHours(currentDLMO + shiftAmount);
+          currentCBTmin = normalizeHours(currentCBTmin + shiftAmount);
+        } else {
+          // Shift DLMO earlier (subtract)
+          currentDLMO = normalizeHours(currentDLMO - shiftAmount);
+          currentCBTmin = normalizeHours(currentCBTmin - shiftAmount);
+        }
+        
+        remainingShift -= shiftAmount;
+        dayEntry.shiftThisDay = shiftAmount;
+        
+        // Clamp to target (never overshoot)
+        const distToTarget = circularDistance(currentDLMO, targetDLMO);
+        if (distToTarget < 0.01 || remainingShift < 0.01) {
+          currentDLMO = targetDLMO;
+          currentCBTmin = targetCBTmin;
+          remainingShift = 0;
+        }
       }
-      cbtminByDay.push(currentCBTmin);
-    }
-    
-    return cbtminByDay;
-  }
-
-  /**
-   * Generate in-flight melatonin recommendation using PRC rules
-   * 
-   * CRITICAL: All timing is in BODY TIME (origin-adapted clock), not destination time.
-   * 
-   * Key principle: Recommend melatonin only when:
-   * 1. Timing fits the melatonin PRC in body time (5-7h before DLMO for advance)
-   * 2. For sleep doses (>1mg), must fall within planned in-flight sleep window
-   * 3. Shift magnitude warrants intervention (>2h)
-   * 4. Never recommend when PRC would push clock wrong way
-   * 
-   * Settings:
-   * - PRC tolerance: ±1.5h (conservative)
-   * - Phase-shift dose: 0.5mg
-   * - Sleep dose: 1-3mg (only if sleeping during target window)
-   * - Mid-flight: only if within planned sleep window
-   * 
-   * @param {Object} flight - {dep, arr, fromTz, toTz, durationHours}
-   * @param {number} currentCBTmin - CBTmin in origin time zone (hours, body clock)
-   * @param {number} currentDLMO - DLMO in origin time zone (hours, body clock)
-   * @param {string} direction - 'advance' or 'delay'
-   * @param {number} shiftMagnitude - Hours to shift
-   * @returns {Object} recommendation
-   */
-  function generateInFlightMelatonin(flight, currentCBTmin, currentDLMO, direction, shiftMagnitude) {
-    const { dep, arr, durationHours, fromTz } = flight;
-    
-    const result = {
-      atBoarding: false,
-      midFlight: false,
-      timing: null,
-      dose: null,
-      reasoning: '',
-    };
-    
-    // Don't recommend for small shifts (≤2h)
-    if (shiftMagnitude <= 2) {
-      result.reasoning = `Shift magnitude (${shiftMagnitude.toFixed(1)}h) is small - no melatonin needed. Light exposure and sleep timing are sufficient.`;
-      return result;
-    }
-    
-    // For delays: morning light better than melatonin
-    if (direction === 'delay') {
-      result.reasoning = 'For westbound delays, morning light after CBTmin is more effective than melatonin. No in-flight melatonin recommended.';
-      return result;
-    }
-    
-    // For advances: DOSE-SPECIFIC PRC timing (Burgess et al. 2010)
-    // 0.5mg (phase-shift): Peak at 3h before DLMO, effective window 2-4h before DLMO
-    // 3.0mg (sleep aid): Peak at 5h before DLMO, effective window 3-7h before DLMO
-    const targetHour05mg = (currentDLMO - 3 + 24) % 24; // 0.5mg peak
-    const targetHour3mg = (currentDLMO - 5 + 24) % 24;  // 3mg peak
-    const tolerance05mg = 1.0; // ±1h window (2-4h before DLMO)
-    const tolerance3mg = 2.0;  // ±2h window (3-7h before DLMO)
-    
-    // Calculate timing in BODY TIME (origin timezone = traveler's current circadian phase)
-    const boardingHour = getLocalHour(dep, fromTz); // Body clock hour at boarding
-    const midFlightMs = dep + 4 * 3600000;
-    const midFlightHour = getLocalHour(midFlightMs, fromTz); // Body clock hour mid-flight
-    
-    // Calculate offset from BOTH dose-specific PRC peaks
-    const boardingOffset05mg = Math.min(Math.abs(boardingHour - targetHour05mg), 24 - Math.abs(boardingHour - targetHour05mg));
-    const boardingOffset3mg = Math.min(Math.abs(boardingHour - targetHour3mg), 24 - Math.abs(boardingHour - targetHour3mg));
-    
-    const midFlightOffset05mg = Math.min(Math.abs(midFlightHour - targetHour05mg), 24 - Math.abs(midFlightHour - targetHour05mg));
-    const midFlightOffset3mg = Math.min(Math.abs(midFlightHour - targetHour3mg), 24 - Math.abs(midFlightHour - targetHour3mg));
-    
-    // Calculate position relative to DLMO and CBTmin for context
-    const hoursSinceDLMO = boardingHour >= currentDLMO ? 
-      boardingHour - currentDLMO : 
-      boardingHour + 24 - currentDLMO;
-    const hoursUntilCBTmin = boardingHour <= currentCBTmin ?
-      currentCBTmin - boardingHour :
-      currentCBTmin + 24 - boardingHour;
-    
-    // Boarding-time recommendation - check 0.5mg window (phase-shift dose)
-    if (boardingOffset05mg <= tolerance05mg && durationHours >= 6) {
-      // Within 0.5mg PRC window at boarding (2-4h before DLMO)
-      result.atBoarding = true;
-      result.timing = 'at boarding';
-      result.dose = '0.5 mg';
-      result.purpose = 'phase-shift';
-      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is within the 0.5mg PRC window (${targetHour05mg.toFixed(1)}h ± 1h = 2-4h before DLMO at ${currentDLMO.toFixed(1)}h). Take 0.5 mg for phase shift (chronobiotic, not sleep aid). Burgess et al. 2010: 0.5mg peak advance occurs 2-4h before DLMO.`;
-      return result;
-    }
-    
-    // Mid-flight recommendation - check if within sleep window AND PRC-aligned
-    if (durationHours >= 8) {
-      // Sleep window is roughly DLMO to CBTmin+3h
-      const sleepWindowStart = currentDLMO;
-      const sleepWindowEnd = (currentCBTmin + 3) % 24;
-      
-      const inSleepWindow = (midFlightHour >= sleepWindowStart && midFlightHour <= sleepWindowEnd) ||
-                           (sleepWindowEnd < sleepWindowStart && (midFlightHour >= sleepWindowStart || midFlightHour <= sleepWindowEnd));
-      
-      // Check 3mg window (3-7h before DLMO) for sleep dose
-      if (midFlightOffset3mg <= tolerance3mg && inSleepWindow) {
-        result.midFlight = true;
-        result.timing = 'mid-flight (4h after departure)';
-        result.dose = '3 mg';
-        result.purpose = 'sleep + phase-shift';
-        result.reasoning = `Mid-flight at ${midFlightHour.toFixed(1)}h body time is within the 3mg PRC window (${targetHour3mg.toFixed(1)}h ± 2h = 3-7h before DLMO) AND during planned sleep window. Take 3 mg for sleep aid plus phase shift. Burgess et al. 2010: 3mg peak advance occurs ~5h before DLMO.`;
-        return result;
-      }
-      
-      // Check 0.5mg window for phase-shift (even if outside sleep window)
-      if (midFlightOffset05mg <= tolerance05mg && inSleepWindow) {
-        result.midFlight = true;
-        result.timing = 'mid-flight (4h after departure)';
-        result.dose = '0.5 mg';
-        result.purpose = 'phase-shift';
-        result.reasoning = `Mid-flight at ${midFlightHour.toFixed(1)}h body time is within the 0.5mg PRC window (2-4h before DLMO) and sleep window. Take 0.5 mg for phase shift (minimal sleep effect).`;
-        return result;
-      }
-      
-      if (midFlightOffset05mg <= tolerance05mg || midFlightOffset3mg <= tolerance3mg) {
-        result.reasoning = `Mid-flight timing (${midFlightHour.toFixed(1)}h body time) is PRC-aligned but outside planned sleep window. Recommend post-arrival dosing instead.`;
-        return result;
-      }
-    }
-    
-    // Not PRC-aligned - explain why based on body clock position
-    if (hoursSinceDLMO < 3) {
-      // Recently past DLMO
-      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is ${hoursSinceDLMO.toFixed(1)}h past DLMO (${currentDLMO.toFixed(1)}h). This is past the advance PRC window (need 1-7h BEFORE DLMO). Melatonin PRC shows minimal advance effect this close to or past DLMO. (Burgess et al. 2008)`;
-    } else if (hoursUntilCBTmin < 4) {
-      // Approaching CBTmin
-      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is ${hoursUntilCBTmin.toFixed(1)}h before CBTmin (${currentCBTmin.toFixed(1)}h). This is near the PRC crossover where melatonin transitions from advance to delay effects. Avoid dosing in this dead zone. (Burgess et al. 2008, Lewy et al. 1992)`;
-    } else {
-      // General misalignment
-      const minOffset = Math.min(boardingOffset05mg, boardingOffset3mg);
-      result.reasoning = `Flight timing doesn't align with melatonin PRC advance window. Boarding at ${boardingHour.toFixed(1)}h body time is ${minOffset.toFixed(1)}h from nearest PRC peak. Effective windows: 0.5mg at 1-5h before DLMO (${targetHour05mg.toFixed(1)}h ± 2h), 3mg at 3-7h before DLMO (${targetHour3mg.toFixed(1)}h ± 2h). Post-arrival dosing will be more effective.`;
-    }
-    
-    return result;
-  }
-
-  /**
-   * Generate daily recommendations for a trip
-   * 
-   * @param {Object} trip - Trip details with origin, destination, departure date
-   * @param {Object} habitualSleep - {sleepHour, wakeHour} in origin timezone
-   * @param {number} preTripDays - Days before departure to start shifting
-   * @param {number} postTripDays - Days after arrival to track
-   * @returns {Object} Full trip recommendations
-   */
-  function generateTripPlan(trip, habitualSleep, preTripDays = 2, postTripDays = 5) {
-    const { fromTz, toTz, depMs, arrMs } = trip;
-    
-    // Step 1: Estimate initial circadian phase markers
-    const initialCBTmin = estimateCBTmin(habitualSleep);
-    const initialDLMO = estimateDLMO(habitualSleep);
-    
-    // Step 2: Calculate shift requirements
-    const shift = calculateShift(fromTz, toTz, depMs);
-    const { recommendedDirection, recommendedMagnitude } = shift;
-    
-    // Step 3: Simulate clock shift over the trip
-    const totalDays = preTripDays + 1 + postTripDays; // pre + flight day + post
-    const cbtminByDay = simulateClockShift(initialCBTmin, recommendedDirection, totalDays, true);
-    const dlmoByDay = cbtminByDay.map(cbt => (cbt + 14) % 24); // DLMO ≈ CBT + 14h
-    
-    // Step 4: Generate daily recommendations
-    const dailyPlan = [];
-    
-    for (let day = 0; day < totalDays; day++) {
-      const isPreTrip = day < preTripDays;
-      const isFlightDay = day === preTripDays;
-      const isPostTrip = day > preTripDays;
-      
-      const currentCBTmin = cbtminByDay[day];
-      const currentDLMO = dlmoByDay[day];
-      
-      const lightTiming = calculateLightTiming(currentCBTmin, recommendedDirection);
-      const melatoninTiming = calculateMelatoninTiming(currentDLMO, currentCBTmin, recommendedDirection);
-      
-      // Caffeine: stop 8h before target sleep
-      const targetSleep = (currentDLMO + 2) % 24; // Sleep ≈ DLMO + 2h
-      const caffeineCutoff = (targetSleep - 8 + 24) % 24;
-      
-      dailyPlan.push({
-        day,
-        phase: isPreTrip ? 'pre-trip' : isFlightDay ? 'flight' : 'post-arrival',
-        cbtmin: currentCBTmin,
-        dlmo: currentDLMO,
-        targetSleep,
-        lightTiming,
-        melatoninTiming,
-        caffeineCutoff,
-      });
     }
     
     // Step 5: Generate in-flight recommendations
-    // CRITICAL: Use CBTmin/DLMO from the START of flight day (end of previous day),
-    // not the end of flight day, because boarding happens before that day's shift.
-    // If preTripDays > 0, use the previous day's shifted values.
-    // If preTripDays === 0, use initial values.
-    const boardingCBTmin = preTripDays > 0 ? dailyPlan[preTripDays - 1].cbtmin : initialCBTmin;
-    const boardingDLMO = preTripDays > 0 ? dailyPlan[preTripDays - 1].dlmo : initialDLMO;
+    const boardingDayIndex = Math.max(0, flightDayIndex - 1);
+    const boardingDay = schedule[boardingDayIndex];
+    const boardingDLMO = boardingDay.dlmoUtc;
     
-    const inFlightMelatonin = generateInFlightMelatonin(
-      { dep: depMs, arr: arrMs, durationHours: (arrMs - depMs) / 3600000, fromTz, toTz },
-      boardingCBTmin,
+    const boardingHourOrigin = getLocalHour(departureMs, originTz);
+    const boardingHourUtc = localToUtc(boardingHourOrigin, originTz, departureMs);
+    
+    const inFlightAdvice = generateInFlightMelatonin(
+      departureMs,
+      arrivalMs,
+      boardingHourUtc,
       boardingDLMO,
-      recommendedDirection,
-      recommendedMagnitude
+      direction,
+      magnitude
     );
     
     return {
+      // Trip overview
+      origin,
+      destination,
+      departureMs,
+      arrivalMs,
+      habitualSleep,
+      
+      // Shift analysis
       shift,
-      initialCBTmin,
+      direction,
+      magnitude,
       initialDLMO,
-      recommendedDirection,
-      recommendedMagnitude,
-      dailyPlan,
-      inFlightMelatonin,
+      initialCBTmin,
+      targetDLMO,
+      targetCBTmin,
+      
+      // Timeline
+      preTripDays,
+      adaptationDays,
+      totalDays,
+      
+      // Daily schedule
+      schedule,
+      
+      // In-flight
+      inFlight: inFlightAdvice
     };
   }
 
   /**
-   * Format recommendations into human-readable text
+   * Generate in-flight melatonin recommendation
    */
-  function formatRecommendations(plan) {
-    const { shift, recommendedDirection, recommendedMagnitude, inFlightMelatonin } = plan;
-    
-    let text = `Shift: ${shift.rawShift}h ${shift.direction}ward. `;
-    text += `Recommended strategy: ${recommendedDirection} ${recommendedMagnitude.toFixed(1)}h. `;
-    
-    if (inFlightMelatonin.atBoarding || inFlightMelatonin.midFlight) {
-      text += `In-flight melatonin: ${inFlightMelatonin.dose} ${inFlightMelatonin.timing}. `;
-    } else {
-      text += `In-flight melatonin: Not recommended. `;
+  function generateInFlightMelatonin(depMs, arrMs, boardingHourUtc, boardingDLMO, direction, magnitude) {
+    // Don't recommend for small shifts
+    if (magnitude <= 2) {
+      return {
+        recommended: false,
+        reason: `Shift too small (${magnitude.toFixed(1)}h) - no melatonin needed`
+      };
     }
     
-    text += inFlightMelatonin.reasoning;
+    // Only for advances (delays use morning light)
+    if (direction !== 'advance') {
+      return {
+        recommended: false,
+        reason: 'Morning light more effective for delays'
+      };
+    }
     
-    return text;
+    // Check if boarding time is in PRC window
+    const inPRCWindow = isInMelatoninWindow(boardingHourUtc, boardingDLMO);
+    
+    if (!inPRCWindow) {
+      const hoursBefore = normalizeHours(boardingDLMO - boardingHourUtc);
+      return {
+        recommended: false,
+        reason: `Boarding time ${hoursBefore.toFixed(1)}h before DLMO - outside PRC advance window (1.5-4.5h before DLMO)`
+      };
+    }
+    
+    // Check if during sleep window (for sleep dose consideration)
+    const inSleep = isInSleepWindow(boardingHourUtc, boardingDLMO);
+    const dose = inSleep ? '3 mg' : '0.5 mg';
+    const purpose = inSleep ? 'sleep + phase-shift' : 'phase-shift';
+    
+    return {
+      recommended: true,
+      dose,
+      purpose,
+      reason: `Boarding time within PRC advance window (${normalizeHours(boardingDLMO - boardingHourUtc).toFixed(1)}h before DLMO)`
+    };
   }
 
-  // Export API
-  window.CircadianAlgorithm = window.CircadianAlgorithm || {};
-  Object.assign(window.CircadianAlgorithm, {
+  // ============================================================================
+  // STORAGE
+  // ============================================================================
+
+  function getHabitualSleep() {
+    if (typeof localStorage === 'undefined') {
+      return { sleepHour: 23, wakeHour: 7 };
+    }
+    const stored = localStorage.getItem('jetlag-habitual-sleep');
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch (e) {
+        console.warn('Invalid stored habitual sleep');
+      }
+    }
+    return { sleepHour: 23, wakeHour: 7 };
+  }
+
+  function setHabitualSleep(habitualSleep) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('jetlag-habitual-sleep', JSON.stringify(habitualSleep));
+    }
+  }
+
+  // ============================================================================
+  // EXPORTS
+  // ============================================================================
+
+  const API = {
+    // Main API
+    generateTripPlan,
+    
     // Settings
     getHabitualSleep,
     setHabitualSleep,
     
-    // Phase marker estimation
-    estimateCBTmin,
-    estimateDLMO,
-    
-    // Core calculations
+    // Utilities (for testing)
+    estimateInitialDLMO,
+    dlmoToCBTmin,
+    calculateTargetDLMO,
     calculateShift,
-    calculateLightTiming,
-    calculateMelatoninTiming,
-    simulateClockShift,
-    
-    // Trip planning
-    generateTripPlan,
-    generateInFlightMelatonin,
-    formatRecommendations,
-    
-    // Utilities
+    calculateLightWindows,
+    calculateMelatoninAdvice,
+    getDailyShift,
+    normalizeHours,
+    circularDistance,
+    utcToLocal,
+    localToUtc,
+    formatHour,
+    getTimeOfDayLabel,
     getLocalHour,
-    getTimezoneOffset,
-  });
+    getTzOffsetHours,
+    
+    // Constants (for testing)
+    CBTMIN_OFFSET_FROM_DLMO,
+    DLMO_OFFSET_FROM_SLEEP,
+    MAX_ADVANCE_RATE,
+    MIN_ADVANCE_RATE,
+    MAX_DELAY_RATE,
+    MIN_DELAY_RATE,
+    MELATONIN_ADVANCE_PEAK,
+    MELATONIN_ADVANCE_WINDOW,
+    ANTIDROMIC_THRESHOLD
+  };
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = API;
+  } else if (typeof window !== 'undefined') {
+    window.CircadianAlgorithm = API;
+  } else {
+    global.CircadianAlgorithm = API;
+  }
 
 })();

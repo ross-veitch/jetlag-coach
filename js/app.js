@@ -90,25 +90,67 @@
       const depMs = Date.parse(flight.dep);
       const arrMs = Date.parse(flight.arr);
       
-      // Generate full trip plan using v2 API
-      const tripPlan = algo.generateTripPlan(
-        { fromTz, toTz, depMs, arrMs },
-        habitualSleep,
-        2, // preTripDays
-        5  // postTripDays
-      );
+      // Build trip data for v3 API
+      const tripData = {
+        origin: {
+          code: flight.from,
+          name: flight.label ? flight.label.split(' → ')[0] : flight.from,
+          timeZone: fromTz
+        },
+        destination: {
+          code: flight.to,
+          name: flight.label ? flight.label.split(' → ')[1] : flight.to,
+          timeZone: toTz
+        },
+        departureMs: depMs,
+        arrivalMs: arrMs,
+        habitualSleep: habitualSleep
+      };
+      
+      // Generate full trip plan using v3 API
+      let tripPlan;
+      try {
+        tripPlan = algo.generateTripPlan(tripData, { preTripDays: 2 });
+      } catch (err) {
+        console.error(`Error generating plan for ${flight.id}:`, err);
+        flight.detail = `⚠️ Error generating plan: ${err.message}`;
+        continue;
+      }
       
       // Format in-flight advice
-      const inFlight = tripPlan.inFlightMelatonin;
-      let advice = `${tripPlan.shift.rawShift.toFixed(1)}h ${tripPlan.shift.direction} shift. `;
-      advice += `Recommended: ${tripPlan.recommendedDirection} ${tripPlan.recommendedMagnitude.toFixed(1)}h. `;
+      const inFlight = tripPlan.inFlight;
+      const shift = tripPlan.shift || {};
       
-      if (inFlight.atBoarding || inFlight.midFlight) {
-        advice += `In-flight melatonin: ${inFlight.dose} ${inFlight.timing}. `;
-      } else {
-        advice += `In-flight melatonin: Not recommended. `;
+      let advice = '';
+      
+      // Add shift information if available
+      if (shift.rawDiff !== undefined) {
+        const rawShiftAbs = Math.abs(shift.rawDiff);
+        const shiftDir = shift.rawDiff > 0 ? 'east' : shift.rawDiff < 0 ? 'west' : 'none';
+        advice += `${rawShiftAbs.toFixed(1)}h ${shiftDir} shift. `;
       }
-      advice += inFlight.reasoning;
+      
+      // Add strategy
+      if (tripPlan.direction && tripPlan.magnitude !== undefined) {
+        advice += `Strategy: ${tripPlan.direction} ${tripPlan.magnitude.toFixed(1)}h. `;
+      }
+      
+      // Add adaptation days
+      if (tripPlan.adaptationDays !== undefined) {
+        advice += `Adaptation: ${tripPlan.adaptationDays} days. `;
+      }
+      
+      // Add in-flight melatonin advice
+      if (inFlight && inFlight.recommended) {
+        advice += `In-flight: ${inFlight.dose} (${inFlight.purpose}). `;
+      } else if (inFlight) {
+        advice += `In-flight: No melatonin. `;
+      }
+      
+      // Add reasoning
+      if (inFlight && inFlight.reason) {
+        advice += inFlight.reason;
+      }
       
       // Set the detail field with algorithm-generated advice
       flight.detail = advice;
