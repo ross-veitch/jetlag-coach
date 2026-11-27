@@ -33,7 +33,7 @@
   }
 
   /**
-   * Generate recommendations for all trips and flights
+   * Generate recommendations for all trips and flights using v2 PRC-based algorithm
    */
   async function generateFlightRecommendations() {
     if (!window.CircadianAlgorithm) {
@@ -50,75 +50,69 @@
 
     const algo = window.CircadianAlgorithm;
     
-    // Process all trips (not just trips[0])
+    // Get habitual sleep from settings (localStorage)
+    const habitualSleep = algo.getHabitualSleep();
+    
+    // Process all trips
     const allTrips = data.trips || [trip];
     
-    for (const currentTrip of allTrips) {
-      const zoneHistory = algo.buildZoneHistory(currentTrip);
-      
-      // Get flights for this trip from global flights array
-      // (In this app structure, flights are global, but filtered by trip context)
-      const tripFlights = data.flights || [];
-      
-      for (const flight of tripFlights) {
-        if (!flight.from || !flight.to) {
-          console.warn(`Flight ${flight.id || flight.label}: Missing from/to airport codes`);
-          continue;
-        }
-        
-        // Look up airport timezones
-        const fromTz = getAirportTimezone(flight.from, airportDatabase);
-        const toTz = getAirportTimezone(flight.to, airportDatabase);
-        
-        if (!fromTz || !toTz) {
-          const missingAirports = [];
-          if (!fromTz) missingAirports.push(`${flight.from} (departure)`);
-          if (!toTz) missingAirports.push(`${flight.to} (arrival)`);
-          
-          const errorMsg = `⚠️ Flight ${flight.id}: Unknown airport timezone(s): ${missingAirports.join(', ')}. ` +
-            `Add to data/airports.json to enable circadian advice.`;
-          
-          console.error(errorMsg);
-          flight.detail = errorMsg;
-          flight._algorithmError = errorMsg;
-          continue;
-        }
-        
-        // Set timezones on flight object for algorithm
-        flight.fromTz = fromTz;
-        flight.toTz = toTz;
-        
-        const dep = Date.parse(flight.dep);
-        const arr = Date.parse(flight.arr);
-        const durationHours = (arr - dep) / 3600000;
-        const bodyClock = algo.calculateBodyClock(zoneHistory, dep);
-        
-        const flightData = {
-          dep,
-          arr,
-          fromTz,
-          toTz,
-          durationHours,
-        };
-        
-        // Estimate sleep debt from recent flights (simple heuristic)
-        let sleepDebt = 0;
-        if (currentTrip.zoneSegments && currentTrip.zoneSegments.length > 0) {
-          const daysSinceDeparture = (dep - Date.parse(currentTrip.zoneSegments[0].from)) / 86400000;
-          if (daysSinceDeparture < 4) {
-            sleepDebt = 1; // Accumulating debt in first few days
-          }
-        }
-        
-        const context = { sleepDebt };
-        const plan = algo.generateFlightPlan(flightData, bodyClock, context);
-        const advice = algo.formatFlightAdvice(plan, flightData);
-        
-        // Replace the detail field with algorithm-generated advice
-        flight.detail = advice;
-        flight._algorithmPlan = plan; // Store for debugging
-        flight._bodyClock = bodyClock; // Store for debugging
+    // Process flights - generate trip plans for each
+    const tripFlights = data.flights || [];
+    
+    for (const flight of tripFlights) {
+      if (!flight.from || !flight.to) {
+        console.warn(`Flight ${flight.id || flight.label}: Missing from/to airport codes`);
+        continue;
       }
+      
+      // Look up airport timezones
+      const fromTz = getAirportTimezone(flight.from, airportDatabase);
+      const toTz = getAirportTimezone(flight.to, airportDatabase);
+      
+      if (!fromTz || !toTz) {
+        const missingAirports = [];
+        if (!fromTz) missingAirports.push(`${flight.from} (departure)`);
+        if (!toTz) missingAirports.push(`${flight.to} (arrival)`);
+        
+        const errorMsg = `⚠️ Flight ${flight.id}: Unknown airport timezone(s): ${missingAirports.join(', ')}. ` +
+          `Add to data/airports.json to enable circadian advice.`;
+        
+        console.error(errorMsg);
+        flight.detail = errorMsg;
+        flight._algorithmError = errorMsg;
+        continue;
+      }
+      
+      // Set timezones on flight object
+      flight.fromTz = fromTz;
+      flight.toTz = toTz;
+      
+      const depMs = Date.parse(flight.dep);
+      const arrMs = Date.parse(flight.arr);
+      
+      // Generate full trip plan using v2 API
+      const tripPlan = algo.generateTripPlan(
+        { fromTz, toTz, depMs, arrMs },
+        habitualSleep,
+        2, // preTripDays
+        5  // postTripDays
+      );
+      
+      // Format in-flight advice
+      const inFlight = tripPlan.inFlightMelatonin;
+      let advice = `${tripPlan.shift.rawShift.toFixed(1)}h ${tripPlan.shift.direction} shift. `;
+      advice += `Recommended: ${tripPlan.recommendedDirection} ${tripPlan.recommendedMagnitude.toFixed(1)}h. `;
+      
+      if (inFlight.atBoarding || inFlight.midFlight) {
+        advice += `In-flight melatonin: ${inFlight.dose} ${inFlight.timing}. `;
+      } else {
+        advice += `In-flight melatonin: Not recommended. `;
+      }
+      advice += inFlight.reasoning;
+      
+      // Set the detail field with algorithm-generated advice
+      flight.detail = advice;
+      flight._tripPlan = tripPlan; // Store full plan for debugging/UI
     }
   }
 
@@ -841,9 +835,35 @@
       .join("");
     const training = (data.training || []).map((t) => `<li>${escapeHtml(t)}</li>`).join("");
     const s = data.strategy || {};
+    
+    // Get current habitual sleep settings
+    const habitualSleep = window.CircadianAlgorithm.getHabitualSleep();
+    const sleepHour = Math.floor(habitualSleep.sleepHour);
+    const sleepMin = Math.round((habitualSleep.sleepHour - sleepHour) * 60);
+    const wakeHour = Math.floor(habitualSleep.wakeHour);
+    const wakeMin = Math.round((habitualSleep.wakeHour - wakeHour) * 60);
+    
     document.getElementById("panel-body").innerHTML = `
       <h2>${escapeHtml(trip.name)}</h2>
       <p><strong>${escapeHtml(s.headline || "")}</strong> — ${escapeHtml(s.summary || "")}</p>
+      <h3>Habitual Sleep Schedule</h3>
+      <p style="margin-bottom:8px;">Your circadian recommendations are based on your typical sleep schedule. Update this to get personalized advice.</p>
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px;">
+        <label style="display:flex;align-items:center;gap:8px;">
+          Sleep time:
+          <select id="sleep-hour" style="padding:4px;border-radius:4px;border:1px solid #ccc;">
+            ${Array.from({length:24}, (_, i) => `<option value="${i}" ${i === sleepHour ? 'selected' : ''}>${String(i).padStart(2,'0')}:00</option>`).join('')}
+          </select>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          Wake time:
+          <select id="wake-hour" style="padding:4px;border-radius:4px;border:1px solid #ccc;">
+            ${Array.from({length:24}, (_, i) => `<option value="${i}" ${i === wakeHour ? 'selected' : ''}>${String(i).padStart(2,'0')}:00</option>`).join('')}
+          </select>
+        </label>
+        <button type="button" id="save-sleep-btn" style="padding:4px 12px;border-radius:4px;background:#4ade80;color:#000;border:none;cursor:pointer;">Save</button>
+      </div>
+      <p style="font-size:0.875rem;color:#888;margin-bottom:16px;">CBTmin ~${(habitualSleep.wakeHour - 2.5 + 24) % 24}h, DLMO ~${(habitualSleep.sleepHour - 2 + 24) % 24}h (from your habitual sleep)</p>
       <h3>Traveller</h3>
       <p>${escapeHtml(data.traveller)} · Baseline ${escapeHtml(s.baseline || "")} · CBTmin ${escapeHtml(s.cbtmin || "")}</p>
       <p>Melatonin: ${escapeHtml(s.melatonin || "")}<br>Caffeine: ${escapeHtml(s.caffeineCutoff || "")}<br>Hotels: ${escapeHtml(s.hotels || "")}</p>
@@ -854,6 +874,15 @@
       <h3>Notifications</h3>
       <p>Local reminders (~15 min before key actions) when permission is granted. Uses Notification Triggers if available; otherwise timers via the service worker while the app is open or backgrounded. <strong>True reliable push when fully closed needs a push server — not used here.</strong></p>
       <div class="footer-note">${escapeHtml(data.disclaimer)}</div>`;
+    
+    // Add event listener for save button
+    document.getElementById('save-sleep-btn').addEventListener('click', () => {
+      const newSleepHour = parseInt(document.getElementById('sleep-hour').value);
+      const newWakeHour = parseInt(document.getElementById('wake-hour').value);
+      window.CircadianAlgorithm.setHabitualSleep({ sleepHour: newSleepHour, wakeHour: newWakeHour });
+      alert('Sleep schedule saved! Reload the page to see updated recommendations.');
+    });
+    
     els.panel.classList.add("open");
   }
 
