@@ -158,15 +158,15 @@ assert(
   'Advance: melatonin recommended',
   'true',
   `${melAdvance.shouldTake}`,
-  'Melatonin in evening advances the clock'
+  'Melatonin in afternoon/evening advances the clock'
 );
 
 assert(
-  Math.abs(melAdvance.timing - 15) < 2,
+  Math.abs(melAdvance.timing - 18) < 0.5,
   'Advance: melatonin timing',
-  '~15h (6h before DLMO at 21h)',
+  '~18h (3h before DLMO at 21h, 0.5mg peak)',
   `${melAdvance.timing.toFixed(1)}h`,
-  'Peak advance occurs 5-7h before DLMO (Burgess et al.)'
+  'Burgess et al. 2010: 0.5mg peak advance occurs 2-4h before DLMO'
 );
 
 // For delay: melatonin not recommended (morning light better)
@@ -445,8 +445,8 @@ testRoute({
   toTz: 'Asia/Dubai',
   depTime: '2026-11-20T15:00:00-05:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: true, // CORRECTED: 15:00 is exactly 6h before DLMO (21:00)
-  reasoning: 'Boarding at 15:00 is exactly at peak PRC advance window (DLMO-6h). Burgess et al. 2010: melatonin 5-7h before DLMO advances the clock.',
+  expectedMelatoninAtBoarding: false, // CORRECTED: 15:00 is outside 0.5mg window (17:00-19:00) and not sleep time for 3mg
+  reasoning: 'Boarding at 15:00 (3pm) is outside 0.5mg PRC window (17:00-19:00 = 2-4h before DLMO 21:00). Would need 3mg but not during sleep. Burgess et al. 2010: 0.5mg peak 2-4h before DLMO.',
 });
 
 testRoute({
@@ -538,8 +538,8 @@ testRoute({
   toTz: 'America/Los_Angeles',
   depTime: '16:00:00+13:00',
   expectedDirection: 'advance',
-  expectedMelatoninAtBoarding: true, // CORRECTED: 16:00 is 1h from PRC peak (15:00), within ±1.5h window
-  reasoning: 'Boarding at 16:00 is within PRC advance window (1h from peak at 15:00). Burgess et al. 2010: effective window is ±2h around DLMO-6h.',
+  expectedMelatoninAtBoarding: false, // CORRECTED: 16:00 is at 3mg peak but outside 0.5mg window (17:00-19:00), and 3mg only for sleep
+  reasoning: 'Boarding at 16:00 (4pm) is at 3mg PRC peak but outside 0.5mg window (17:00-19:00). 3mg reserved for in-flight sleep, not phase-shift at boarding. Burgess et al. 2010: 0.5mg effective 2-4h before DLMO.',
 });
 
 console.log('\n--- Property-Based Test: Random Trips ---\n');

@@ -211,21 +211,40 @@
    */
   function calculateMelatoninTiming(currentDLMO, currentCBTmin, direction) {
     if (direction === 'advance') {
-      // Advance: melatonin 5-7 hours before DLMO (peak advance effect)
-      // This is typically afternoon/early evening
-      const timing = (currentDLMO - 6 + 24) % 24; // 6h before DLMO
-      const dose = '0.5-1 mg';
-      const reasoning = `Take 0.5-1 mg at ${timing.toFixed(1)}h (6h before DLMO) to advance circadian phase`;
+      // DOSE-SPECIFIC PRC from Burgess et al. 2010:
+      // 0.5mg: Peak advance 2-4h before DLMO (late afternoon/early evening)
+      // 3.0mg: Peak advance ~5h before DLMO (mid-afternoon)
+      // For daily phase shifting, we use 0.5mg (pure chronobiotic, minimal hypnotic)
+      const timing = (currentDLMO - 3 + 24) % 24; // 0.5mg peak: 3h before DLMO
+      const dose = '0.5 mg';
       
-      return { timing, dose, reasoning, shouldTake: true };
+      // Format time and determine time-of-day label
+      const hour = Math.floor(timing);
+      const minute = Math.round((timing - hour) * 60);
+      const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+      
+      let timeOfDay;
+      if (hour >= 12 && hour < 17) {
+        timeOfDay = 'afternoon';
+      } else if (hour >= 17 && hour < 20) {
+        timeOfDay = 'early evening';
+      } else if (hour >= 20) {
+        timeOfDay = 'evening';
+      } else {
+        timeOfDay = 'midday';
+      }
+      
+      const reasoning = `Take 0.5 mg at ${timeStr} (${timeOfDay}, 3h before DLMO at ${Math.floor(currentDLMO)}:00) for phase advance`;
+      
+      return { timing, dose, reasoning, shouldTake: true, purpose: 'phase-shift' };
     } else {
-      // Delay: melatonin in morning after CBTmin delays the clock
-      // But morning light is more effective for delays, so we rarely recommend melatonin
+      // Delay: morning light is more effective than melatonin
       return { 
         timing: null, 
         dose: null, 
         reasoning: 'Morning light is more effective than melatonin for phase delays',
-        shouldTake: false 
+        shouldTake: false,
+        purpose: null
       };
     }
   }
@@ -311,21 +330,25 @@
       return result;
     }
     
-    // For advances: melatonin should be 5-7h before DLMO in BODY TIME (origin clock)
-    const targetHour = (currentDLMO - 6 + 24) % 24; // Peak advance: 6h before DLMO
-    const tolerance = 1.5; // Conservative ±1.5h window
+    // For advances: DOSE-SPECIFIC PRC timing (Burgess et al. 2010)
+    // 0.5mg (phase-shift): Peak at 3h before DLMO, effective window 2-4h before DLMO
+    // 3.0mg (sleep aid): Peak at 5h before DLMO, effective window 3-7h before DLMO
+    const targetHour05mg = (currentDLMO - 3 + 24) % 24; // 0.5mg peak
+    const targetHour3mg = (currentDLMO - 5 + 24) % 24;  // 3mg peak
+    const tolerance05mg = 1.0; // ±1h window (2-4h before DLMO)
+    const tolerance3mg = 2.0;  // ±2h window (3-7h before DLMO)
     
     // Calculate timing in BODY TIME (origin timezone = traveler's current circadian phase)
     const boardingHour = getLocalHour(dep, fromTz); // Body clock hour at boarding
     const midFlightMs = dep + 4 * 3600000;
     const midFlightHour = getLocalHour(midFlightMs, fromTz); // Body clock hour mid-flight
     
-    // Calculate offset from optimal PRC timing
-    const boardingOffset = Math.abs(boardingHour - targetHour);
-    const boardingOffsetNormalized = Math.min(boardingOffset, 24 - boardingOffset);
+    // Calculate offset from BOTH dose-specific PRC peaks
+    const boardingOffset05mg = Math.min(Math.abs(boardingHour - targetHour05mg), 24 - Math.abs(boardingHour - targetHour05mg));
+    const boardingOffset3mg = Math.min(Math.abs(boardingHour - targetHour3mg), 24 - Math.abs(boardingHour - targetHour3mg));
     
-    const midFlightOffset = Math.abs(midFlightHour - targetHour);
-    const midFlightOffsetNormalized = Math.min(midFlightOffset, 24 - midFlightOffset);
+    const midFlightOffset05mg = Math.min(Math.abs(midFlightHour - targetHour05mg), 24 - Math.abs(midFlightHour - targetHour05mg));
+    const midFlightOffset3mg = Math.min(Math.abs(midFlightHour - targetHour3mg), 24 - Math.abs(midFlightHour - targetHour3mg));
     
     // Calculate position relative to DLMO and CBTmin for context
     const hoursSinceDLMO = boardingHour >= currentDLMO ? 
@@ -335,19 +358,19 @@
       currentCBTmin - boardingHour :
       currentCBTmin + 24 - boardingHour;
     
-    // Boarding-time recommendation
-    if (boardingOffsetNormalized <= tolerance && durationHours >= 6) {
-      // Within PRC window at boarding
+    // Boarding-time recommendation - check 0.5mg window (phase-shift dose)
+    if (boardingOffset05mg <= tolerance05mg && durationHours >= 6) {
+      // Within 0.5mg PRC window at boarding (2-4h before DLMO)
       result.atBoarding = true;
       result.timing = 'at boarding';
       result.dose = '0.5 mg';
-      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time (origin clock) is within ${boardingOffsetNormalized.toFixed(1)}h of optimal phase-advance timing (${targetHour.toFixed(1)}h = 6h before DLMO at ${currentDLMO.toFixed(1)}h). Take 0.5 mg for phase shift. (Burgess et al. 2010: 0.5mg produces ~50% of phase shift effect with less hypnotic effect than 3mg.)`;
+      result.purpose = 'phase-shift';
+      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is within the 0.5mg PRC window (${targetHour05mg.toFixed(1)}h ± 1h = 2-4h before DLMO at ${currentDLMO.toFixed(1)}h). Take 0.5 mg for phase shift (chronobiotic, not sleep aid). Burgess et al. 2010: 0.5mg peak advance occurs 2-4h before DLMO.`;
       return result;
     }
     
-    // Mid-flight recommendation (only if within planned sleep window and PRC-aligned)
-    if (midFlightOffsetNormalized <= tolerance && durationHours >= 8) {
-      // Check if mid-flight time is in reasonable sleep window
+    // Mid-flight recommendation - check if within sleep window AND PRC-aligned
+    if (durationHours >= 8) {
       // Sleep window is roughly DLMO to CBTmin+3h
       const sleepWindowStart = currentDLMO;
       const sleepWindowEnd = (currentCBTmin + 3) % 24;
@@ -355,14 +378,28 @@
       const inSleepWindow = (midFlightHour >= sleepWindowStart && midFlightHour <= sleepWindowEnd) ||
                            (sleepWindowEnd < sleepWindowStart && (midFlightHour >= sleepWindowStart || midFlightHour <= sleepWindowEnd));
       
-      if (inSleepWindow) {
+      // Check 3mg window (3-7h before DLMO) for sleep dose
+      if (midFlightOffset3mg <= tolerance3mg && inSleepWindow) {
+        result.midFlight = true;
+        result.timing = 'mid-flight (4h after departure)';
+        result.dose = '3 mg';
+        result.purpose = 'sleep + phase-shift';
+        result.reasoning = `Mid-flight at ${midFlightHour.toFixed(1)}h body time is within the 3mg PRC window (${targetHour3mg.toFixed(1)}h ± 2h = 3-7h before DLMO) AND during planned sleep window. Take 3 mg for sleep aid plus phase shift. Burgess et al. 2010: 3mg peak advance occurs ~5h before DLMO.`;
+        return result;
+      }
+      
+      // Check 0.5mg window for phase-shift (even if outside sleep window)
+      if (midFlightOffset05mg <= tolerance05mg && inSleepWindow) {
         result.midFlight = true;
         result.timing = 'mid-flight (4h after departure)';
         result.dose = '0.5 mg';
-        result.reasoning = `Mid-flight at ${midFlightHour.toFixed(1)}h body time aligns with phase-advance window (${targetHour.toFixed(1)}h ± ${tolerance}h) and falls within sleep window. Take 0.5 mg at that time.`;
+        result.purpose = 'phase-shift';
+        result.reasoning = `Mid-flight at ${midFlightHour.toFixed(1)}h body time is within the 0.5mg PRC window (2-4h before DLMO) and sleep window. Take 0.5 mg for phase shift (minimal sleep effect).`;
         return result;
-      } else {
-        result.reasoning = `Mid-flight timing (${midFlightHour.toFixed(1)}h body time) is PRC-aligned but outside planned sleep window. Recommend boarding dose instead if applicable, or post-arrival dosing.`;
+      }
+      
+      if (midFlightOffset05mg <= tolerance05mg || midFlightOffset3mg <= tolerance3mg) {
+        result.reasoning = `Mid-flight timing (${midFlightHour.toFixed(1)}h body time) is PRC-aligned but outside planned sleep window. Recommend post-arrival dosing instead.`;
         return result;
       }
     }
@@ -370,13 +407,14 @@
     // Not PRC-aligned - explain why based on body clock position
     if (hoursSinceDLMO < 3) {
       // Recently past DLMO
-      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is ${hoursSinceDLMO.toFixed(1)}h past DLMO (${currentDLMO.toFixed(1)}h). This is past the optimal advance window (5-7h BEFORE DLMO, target ${targetHour.toFixed(1)}h). Melatonin PRC shows minimal advance effect this close to or past DLMO. (Burgess et al. 2008)`;
+      result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is ${hoursSinceDLMO.toFixed(1)}h past DLMO (${currentDLMO.toFixed(1)}h). This is past the advance PRC window (need 1-7h BEFORE DLMO). Melatonin PRC shows minimal advance effect this close to or past DLMO. (Burgess et al. 2008)`;
     } else if (hoursUntilCBTmin < 4) {
       // Approaching CBTmin
       result.reasoning = `Boarding at ${boardingHour.toFixed(1)}h body time is ${hoursUntilCBTmin.toFixed(1)}h before CBTmin (${currentCBTmin.toFixed(1)}h). This is near the PRC crossover where melatonin transitions from advance to delay effects. Avoid dosing in this dead zone. (Burgess et al. 2008, Lewy et al. 1992)`;
     } else {
       // General misalignment
-      result.reasoning = `Flight timing doesn't align with melatonin PRC advance window. Need to be within ${tolerance}h of ${targetHour.toFixed(1)}h body time (6h before DLMO at ${currentDLMO.toFixed(1)}h). Boarding at ${boardingHour.toFixed(1)}h body time (${boardingOffsetNormalized.toFixed(1)}h from target), mid-flight at ${midFlightHour.toFixed(1)}h (${midFlightOffsetNormalized.toFixed(1)}h from target). Post-arrival dosing will be more effective.`;
+      const minOffset = Math.min(boardingOffset05mg, boardingOffset3mg);
+      result.reasoning = `Flight timing doesn't align with melatonin PRC advance window. Boarding at ${boardingHour.toFixed(1)}h body time is ${minOffset.toFixed(1)}h from nearest PRC peak. Effective windows: 0.5mg at 1-5h before DLMO (${targetHour05mg.toFixed(1)}h ± 2h), 3mg at 3-7h before DLMO (${targetHour3mg.toFixed(1)}h ± 2h). Post-arrival dosing will be more effective.`;
     }
     
     return result;
